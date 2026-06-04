@@ -2,3 +2,5 @@ a.exe
 a.out
 run.sh
 .vscode
+client.exe
+worker

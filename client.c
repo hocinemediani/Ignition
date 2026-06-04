@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <string.h>
+#include <time.h>
 
 /* Instructions préprocesseur pour différencier les architectures linux de windows qui ont des imports différents. */
 #ifdef _WIN32
@@ -48,6 +49,12 @@ typedef struct messageHeader {
     int numRows;
     int matrixOffset;
 } messageHeader;
+
+
+/* Timers pour le benchmark. */
+clock_t begin;
+clock_t end;
+
 
 
 /* Matrices à envoyer sur le réseau. */
@@ -183,12 +190,13 @@ void* threadMain(void* _arg) {
     while (receivedBytes < bytesToReceive) {
         int bytesReceived = (recv(clientSocket, (char*) arg->result + receivedBytes, bytesLeft, 0));
         if (bytesReceived <= 0) {
-            printf("Echec lors de la réception du résultat depuis : %s", arg->ipAddress);
+            printf("Echec lors de la réception du résultat depuis : %s\n", arg->ipAddress);
             goto end_connection;
         }
         receivedBytes += bytesReceived;
         bytesLeft -= bytesReceived;
     }
+    printf("Confirmation de la réception de la matrice C de orin-nano-%d\n", arg->index);
     end_connection:
     CLOSE_SOCKET(clientSocket);
     return NULL;
@@ -226,6 +234,7 @@ int main(int argc, char *argv[]) {
     initMatrices(matrixSize);
     
     /* 2. Créer numCards thread pour gérer les sockets et le résultat de chaque worker. */
+    begin = clock();
     pthread_t *threads = malloc(numCards * sizeof(pthread_t));
     pthread_args *args = malloc(numCards * sizeof(pthread_args));
 
@@ -242,9 +251,13 @@ int main(int argc, char *argv[]) {
     for (int n = 0; n < numCards; n++) {
         pthread_join(threads[n], NULL);
     }
+    end = clock();
+    printf("\n==========================================================\n");
+    printf("BENCHMARK : Temps de calcul par les jetson nano : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
     
     /* 6. Vérifier qu'il n'y ait pas eu d'erreurs de calcul / race-conditions et mesurer le temps. */
     int *matrixC = malloc(matrixSize * matrixSize * sizeof(int));
+    memset(matrixC, 0, matrixSize * matrixSize * sizeof(int));
 
     for (int i = 0; i < numCards; i++) {
         if (args[i].result == NULL) {
@@ -253,8 +266,12 @@ int main(int argc, char *argv[]) {
         }
         memcpy(matrixC + args[i].matrixOffset, args[i].result, args[i].numRows * matrixSize * sizeof(int));
     }
+    end = clock();
+    printf("BENCHMARK : Temps total pour les jetson nano : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+    // printMatrix(matrixC, matrixSize);
 
     /* Calcul de la matrice depuis le client, pour vérifier le résultat. */
+    begin = clock();
     int *cpuMatrixC = malloc (matrixSize * matrixSize * sizeof(int));
 
     for (int i = 0; i < matrixSize; i++) {
@@ -266,23 +283,28 @@ int main(int argc, char *argv[]) {
             cpuMatrixC[i * matrixSize + j] = coefficient;
         }
     }
+    end = clock();
+    printf("BENCHMARK : Temps de calcul CPU de la matrice C : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+    // printMatrix(cpuMatrixC, matrixSize);
 
     /* Vérification du résultat obtenu. */
     float erreurTotale = 0;
 
     for (int i = 0; i < matrixSize; i++) {
         for (int j = 0; j < matrixSize; j++) {
-            erreurTotale += (float) abs(cpuMatrixC[i * matrixSize + j] - matrixC[i * matrixSize + j]);
+            erreurTotale += (float) abs((cpuMatrixC[i * matrixSize + j] - matrixC[i * matrixSize + j]) / cpuMatrixC[i * matrixSize + j]);
         }
     }
-    erreurTotale = erreurTotale / (matrixSize * matrixSize);
-    printf("Après vérification du calcul effectué par les jetson, l'erreur absolue moyenne est de %f%%\n", erreurTotale);
+    erreurTotale = (erreurTotale * 100) / (matrixSize * matrixSize);
+    printf("==========================================================\n\n");
+    printf("Après vérification du calcul effectué par les jetson, l'erreur relative moyenne est de %.2f%%\n", erreurTotale);
 
     /* Fermeture de la connexion (windows) et libération de la mémoire allouée. */
     close_connection();
     free(matrixA);
     free(matrixB);
     free(matrixC);
+    free(cpuMatrixC);
     for (int n = 0; n < numCards; n++) {
         free(args[n].ipAddress);
         if (args[n].result) {
