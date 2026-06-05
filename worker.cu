@@ -123,7 +123,6 @@ int main(int argc, char* argv[]) {
         printf("Erreur lors du bind du socket.\n");
         exit(EXIT_FAILURE);
     }
-    printf("Bind réalisé avec succès.\n");
 
     if (listen(socketFd, 10) == -1) {
         printf("Erreur lors de l'écoute sur le socket.\n");
@@ -151,7 +150,6 @@ int main(int argc, char* argv[]) {
             printf("Echec lors de la réception du header\n");
             continue;
         }
-        printf("Header receptionné avec succès !\n");
 
         int *matrixA;
         cudaMallocManaged(&matrixA, header.numRows * header.matrixSize * sizeof(int));
@@ -160,7 +158,6 @@ int main(int argc, char* argv[]) {
             printf("Echec lors de la réception des lignes de la matrice A\n");
             continue;
         }
-        printf("Matrice A receptionnée avec succès !\n");
 
         int *matrixB;
         cudaMallocManaged(&matrixB, header.matrixSize * header.matrixSize * sizeof(int));
@@ -169,24 +166,25 @@ int main(int argc, char* argv[]) {
             printf("Echec lors de la réception de la matrice B\n");
             continue;
         }
-        printf("Matrice B receptionnée avec succès !\n");
 
         /* 3. Calculer les lignes de la matrice C correspondantes. */
         int *matrixC;
         cudaMallocManaged(&matrixC, header.numRows * header.matrixSize * sizeof(int));
 
         int numBlocks = (header.matrixSize * header.numRows + blockSize - 1) / blockSize;
+        
+        /* On copie en VRAM les données utiles. */
+        cudaMemPrefetchAsync(matrixA, header.numRows * header.matrixSize * sizeof(int), 0, 0);
+        cudaMemPrefetchAsync(matrixB, header.matrixSize * header.matrixSize * sizeof(int), 0, 0);
+        cudaMemPrefetchAsync(matrixC, header.matrixSize * header.matrixSize * sizeof(int), 0, 0);
+
         computeMatrices<<<numBlocks, blockSize>>>(header.matrixSize, header.numRows, matrixA, matrixB, matrixC);
 
         /* On attends que le GPU ait fini les tâches assignées. */
         cudaDeviceSynchronize();
-
-        /* 4. Envoyer les lignes sur le réseau et se remettre en attente d'une connexion. */
         end = clock();
 
-        printf("\n==========================================================\n");
-        printf("BENCHMARK : Temps de calcul total : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
-        printf("==========================================================\n\n");
+        /* 4. Envoyer les lignes sur le réseau et se remettre en attente d'une connexion. */
 
         printf("Fin des calculs, début de l'envoi.\n");
 
@@ -203,8 +201,6 @@ int main(int argc, char* argv[]) {
             sentBytes += bytesSent;
             bytesToSend -= bytesSent;
         }
-
-        printf("Confirmation de l'envoi de la matrice C.\n");
         
         cudaFree(matrixA);
         cudaFree(matrixB);
