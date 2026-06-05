@@ -6,4 +6,6 @@
 #include <time.h>
 #include <fcntl.h>
 
-int startMain(int _matrixSize, int _numCards);
+#define NUM_CARDS 6
+
+int startMain(int _matrixSize);

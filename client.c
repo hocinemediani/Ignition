@@ -33,6 +33,7 @@
 /* Structure pour envoyer et récupérer les informations par le socket. */
 typedef struct pthread_args {
     int index;
+    int connectedIndex;
     int* result;
     int numRows;
     int matrixOffset;
@@ -57,8 +58,10 @@ int *matrixB;
 
 /* Taille des matrices. */
 int matrixSize;
-/* Nombre de jetson nano. */
-int numCards;
+/* Nombre de cartes connectées sur le réseau. */
+int numConnectedCards;
+/* Index de la dernière carte connectée. */
+int lastCardIndex = 0;
 
 
 /** Méthode helper pour afficher une matrice à la console.
@@ -136,20 +139,20 @@ void* threadMain(void* _arg) {
     serverAddress.sin_port = htons(port);
 
     if ((connect(clientSocket, (struct sockaddr *) &serverAddress, sizeof(serverAddress))) == -1) {
-        printf("Connexion échouée à la jetson nano : %s\n", arg->ipAddress);
+        printf("ERREUR : Connexion échouée à la jetson nano orin-nano-%d\n", arg->index);
         goto end_connection;
     }
-    printf("Connexion réussie à la jetson nano : %s\n", arg->ipAddress);
+    printf("Connexion réussie à la jetson nano orin-nano-%d\n", arg->index);
 
     /* 4. Envoyer l'en-tête, la matrice A par lignes puis la matrice B en entière. */
     
     /* Instantiation du header. */
     struct messageHeader header;
     header.matrixSize = matrixSize;
-    header.numRows = matrixSize / numCards;
-    header.matrixOffset = arg->index * header.numRows * header.matrixSize;
-    if (arg->index == (numCards - 1)) {
-        header.numRows = header.numRows + (matrixSize % numCards);
+    header.numRows = matrixSize / numConnectedCards;
+    header.matrixOffset = arg->connectedIndex * header.numRows * header.matrixSize;
+    if (arg->connectedIndex == (numConnectedCards - 1)) {
+        header.numRows = header.numRows + (matrixSize % numConnectedCards);
     }
     /* Mise à jour des informations récupérables en dehors du thread. */
     arg->numRows = header.numRows;
@@ -157,24 +160,21 @@ void* threadMain(void* _arg) {
 
     /* On envoie le header réseau. */
     if ((sendMessage(clientSocket, (const char *) &header, sizeof(header))) == -1) {
-        printf("L'envoi du header à : %s s'est mal déroulé\n", arg->ipAddress);
+        printf("ERREUR : L'envoi du header à orin-nano-%d s'est mal déroulé\n", arg->index);
         goto end_connection;
     }
-    printf("Confirmation de l'envoi du header à : %s\n", arg->ipAddress);
 
     /* On envoie la matrice A par lignes. */
     if ((sendMessage(clientSocket, (const char *) (matrixA + header.matrixOffset), header.numRows * matrixSize * sizeof(int))) == -1) {
-        printf("L'envoi de la matrice A à : %s s'est mal déroulé\n", arg->ipAddress);
+        printf("ERREUR : L'envoi de la matrice A à orin-nano-%d s'est mal déroulé\n", arg->index);
         goto end_connection;
     }
-    printf("Confirmation de l'envoi de la matrice A à : %s\n", arg->ipAddress);
 
     /* On envoie la matrice B en entier. */
     if ((sendMessage(clientSocket, (const char *) matrixB, matrixSize * matrixSize * sizeof(int))) == -1) {
-        printf("L'envoi de la matrice B à : %s s'est mal déroulé\n", arg->ipAddress);
+        printf("ERREUR : L'envoi de la matrice B à orin-nano-%d s'est mal déroulé\n", arg->index);
         goto end_connection;
     }
-    printf("Confirmation de l'envoi de la matrice B à : %s\n", arg->ipAddress);
     
     /* 5. Attendre la réception des résultats pour reconstruire la matrice C. */
     int receivedBytes = 0;
@@ -184,7 +184,7 @@ void* threadMain(void* _arg) {
     while (receivedBytes < bytesToReceive) {
         int bytesReceived = (recv(clientSocket, (char*) arg->result + receivedBytes, bytesLeft, 0));
         if (bytesReceived <= 0) {
-            printf("Echec lors de la réception du résultat depuis : %s\n", arg->ipAddress);
+            printf("ERREUR : Echec lors de la réception du résultat depuis orin-nano-%d\n", arg->index);
             goto end_connection;
         }
         receivedBytes += bytesReceived;
@@ -197,6 +197,40 @@ void* threadMain(void* _arg) {
 }
 
 
+void checkConnectedJetsons(pthread_args *args, int* connectedCards) {
+    printf("\n==========================================================\n");
+    printf("Détection des cartes présentes sur le réseau...\n");
+    for (int i = 0; i < NUM_CARDS; i++) {
+        /* Récuperation de la structure contenant des informations. */
+        pthread_args *arg = &args[i];
+        /* Créer un socket pour tester la connexion à une jetson nano. */
+        int port = 5798;
+        int destinationOffset = 94;
+        socket_t clientSocket = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in serverAddress;
+
+        memset(&serverAddress, 0, sizeof(serverAddress));
+
+        /* Instantiation des paramètres du socket. */
+        arg->ipAddress = malloc(16 * sizeof(char));
+        sprintf(arg->ipAddress, "147.127.121.%d", arg->index + destinationOffset);
+        serverAddress.sin_addr.s_addr = inet_addr(arg->ipAddress);
+        serverAddress.sin_family = AF_INET;
+        serverAddress.sin_port = htons(port);
+
+        if ((connect(clientSocket, (struct sockaddr *) &serverAddress, sizeof(serverAddress))) == -1) {
+            connectedCards[i] = 0;
+            printf("La orin-nano-%d n'est pas présente sur le réseau.\n", arg->index);
+            continue;
+        }
+        printf("La orin-nano-%d est présente sur le réseau.\n", arg->index);
+        CLOSE_SOCKET(clientSocket);
+        connectedCards[i] = 1;
+    }
+    printf("==========================================================\n\n");
+}
+
+
 /** Fonction principale permettant de :
  * - Vérifier les inputs,
  * - Créer les matrices,
@@ -206,31 +240,49 @@ void* threadMain(void* _arg) {
  * - Reconstruire l'information finale,
  * - Vérifier la conformité de l'information et mesurer le temps total pour un calcul par CPU et par GPU distribué.
 */
-int startMain(int _matrixSize, int _numCards) {
+int startMain(int _matrixSize) {
+    numConnectedCards = 0;
     init_connection();
 
     matrixSize = _matrixSize;
-    numCards = _numCards;
 
     /* 1. Créer les deux matrices à calculer, A et B de taille NxN. */
     initMatrices(matrixSize);
     
-    /* 2. Créer numCards thread pour gérer les sockets et le résultat de chaque worker. */
+    /* 2. Créer NUM_CARDS thread pour gérer les sockets et le résultat de chaque worker. */
     begin = clock();
-    pthread_t *threads = malloc(numCards * sizeof(pthread_t));
-    pthread_args *args = malloc(numCards * sizeof(pthread_args));
+    pthread_t *threads = malloc(NUM_CARDS * sizeof(pthread_t));
+    pthread_args *args = malloc(NUM_CARDS * sizeof(pthread_args));
 
-    /* Création des threads.*/
-    for (int n = 0; n < numCards; n++) {
+    /* Initialisation des arguments des threads. */
+    for (int n = 0; n < NUM_CARDS; n++) {
         args[n].index = n;
         args[n].result = NULL;
         args[n].numRows = 0;
         args[n].matrixOffset = 0;
+    }
+
+    int* connectedCards = malloc(NUM_CARDS * sizeof(int));
+    checkConnectedJetsons(args, connectedCards);
+
+    for (int i = 0; i < NUM_CARDS; i++) {
+        if (connectedCards[i] == 1) {
+            args[i].connectedIndex = numConnectedCards;
+            numConnectedCards++;
+            lastCardIndex = i;
+        }
+    }
+
+    /* Création des threads.*/
+    for (int n = 0; n < NUM_CARDS; n++) {
+        if (connectedCards[n] == 0) {
+            continue;
+        }
         pthread_create(&threads[n], NULL, threadMain, &args[n]);
     }
 
     /* Attente de la terminaison des threads. */
-    for (int n = 0; n < numCards; n++) {
+    for (int n = 0; n < NUM_CARDS; n++) {
         pthread_join(threads[n], NULL);
     }
    
@@ -238,9 +290,9 @@ int startMain(int _matrixSize, int _numCards) {
     int *matrixC = malloc(matrixSize * matrixSize * sizeof(int));
     memset(matrixC, 0, matrixSize * matrixSize * sizeof(int));
 
-    for (int i = 0; i < numCards; i++) {
-        if (args[i].result == NULL) {
-            printf("Il manque les données de la carte orin-nano-%d\n", i);
+    for (int i = 0; i < NUM_CARDS; i++) {
+        if (args[i].result == NULL && connectedCards[i] == 1) {
+            printf("ERREUR : Il manque les données de la carte orin-nano-%d\n", i);
             continue;
         }
         memcpy(matrixC + args[i].matrixOffset, args[i].result, args[i].numRows * matrixSize * sizeof(int));
@@ -253,13 +305,14 @@ int startMain(int _matrixSize, int _numCards) {
     /* Ecriture des résultat dans le fichier csv. */
     int csvFile;
     char fileName[30];
-    sprintf(fileName, "resultatsGPU/result%dcard.csv", numCards);
+    sprintf(fileName, "resultatsGPU/result%dcard.csv", numConnectedCards);
 
     if ((csvFile = open(fileName, O_CREAT | O_WRONLY | O_APPEND, 0644)) == -1) {
-        printf("Erreur lors de l'ouverture du fichier csv.\n");
+        printf("ERREUR : Erreur lors de l'ouverture du fichier csv.\n");
         close(csvFile);
     }
 
+    /* Variable pour l'écriture des données dans le fichier csv. */
     char stringToWrite[20];
     int writtenBytes = 0;
     writtenBytes = sprintf(stringToWrite, "%d;", matrixSize);
@@ -277,12 +330,14 @@ int startMain(int _matrixSize, int _numCards) {
     begin = clock();
     int *transposedMatrixB = malloc(matrixSize * matrixSize * sizeof(int));
 
-    // for (int i = 0; i < matrixSize; i++) {
-    //     for (int j = 0; j < matrixSize; j++) {
-    //         transposedMatrixB[i * matrixSize + j] = matrixB[j * matrixSize + i];
-    //     }
-    // }
+    /* Transposition de la matrice B. */
+    for (int i = 0; i < matrixSize; i++) {
+        for (int j = 0; j < matrixSize; j++) {
+            transposedMatrixB[i * matrixSize + j] = matrixB[j * matrixSize + i];
+        }
+    }
 
+    /* Calcul de C. */
     // for (int i = 0; i < matrixSize; i++) {
     //     for (int j = 0; j < matrixSize; j++) {
     //         int coefficient = 0;
@@ -302,7 +357,7 @@ int startMain(int _matrixSize, int _numCards) {
     // write(csvFile, stringToWrite, writtenBytes);
     // // printMatrix(cpuMatrixC, matrixSize);
 
-    // /* Vérification du résultat obtenu. */
+    /* Vérification du résultat obtenu. */
     // float erreurTotale = 0;
 
     // for (int i = 0; i < matrixSize; i++) {
@@ -322,7 +377,8 @@ int startMain(int _matrixSize, int _numCards) {
     free(matrixC);
     free(cpuMatrixC);
     free(transposedMatrixB);
-    for (int n = 0; n < numCards; n++) {
+    free(connectedCards);
+    for (int n = 0; n < NUM_CARDS; n++) {
         free(args[n].ipAddress);
         if (args[n].result) {
             free(args[n].result);
