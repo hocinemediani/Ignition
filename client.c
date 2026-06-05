@@ -1,14 +1,11 @@
 /* Objectif, distribuer le calcul matriciel C = A x B entre les jetsons. */
-#include <stdlib.h>
-#include <stdio.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <string.h>
-#include <time.h>
+#include "client.h"
 
 /* Instructions préprocesseur pour différencier les architectures linux de windows qui ont des imports différents. */
 #ifdef _WIN32
     #include <winsock2.h>
+    #include <process.h>
+    #include <io.h>
 
     typedef SOCKET socket_t;
     #define CLOSE_SOCKET closesocket
@@ -50,12 +47,9 @@ typedef struct messageHeader {
     int matrixOffset;
 } messageHeader;
 
-
 /* Timers pour le benchmark. */
 clock_t begin;
 clock_t end;
-
-
 
 /* Matrices à envoyer sur le réseau. */
 int *matrixA;
@@ -212,23 +206,11 @@ void* threadMain(void* _arg) {
  * - Reconstruire l'information finale,
  * - Vérifier la conformité de l'information et mesurer le temps total pour un calcul par CPU et par GPU distribué.
 */
-int main(int argc, char *argv[]) {
+int startMain(int _matrixSize, int _numCards) {
     init_connection();
-    /* 0. Vérification de l'input utilisateur. */
-    if (argc < 2) {
-        printf("ERREUR : Spécifiez une taille de matrice dans l'appel.\n");
-        exit(EXIT_FAILURE);
-    }
 
-    if ((matrixSize = atoi(argv[1])) == 0) {
-        printf("ERREUR : Veuillez saisir un entier pour la taille.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    if ((numCards = atoi(argv[2])) == 0) {
-        printf("ERREUR : Veuillez saisir un entier pour le nombre de cartes connectées.\n");
-        exit(EXIT_FAILURE);
-    }
+    matrixSize = _matrixSize;
+    numCards = _numCards;
 
     /* 1. Créer les deux matrices à calculer, A et B de taille NxN. */
     initMatrices(matrixSize);
@@ -251,10 +233,7 @@ int main(int argc, char *argv[]) {
     for (int n = 0; n < numCards; n++) {
         pthread_join(threads[n], NULL);
     }
-    end = clock();
-    printf("\n==========================================================\n");
-    printf("BENCHMARK : Temps de calcul par les jetson nano : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
-    
+   
     /* 6. Vérifier qu'il n'y ait pas eu d'erreurs de calcul / race-conditions et mesurer le temps. */
     int *matrixC = malloc(matrixSize * matrixSize * sizeof(int));
     memset(matrixC, 0, matrixSize * matrixSize * sizeof(int));
@@ -267,24 +246,60 @@ int main(int argc, char *argv[]) {
         memcpy(matrixC + args[i].matrixOffset, args[i].result, args[i].numRows * matrixSize * sizeof(int));
     }
     end = clock();
-    printf("BENCHMARK : Temps total pour les jetson nano : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+    
+    printf("\n==========================================================\n");
+    printf("BENCHMARK : Temps de calcul + transit réseau pour les jetson nano : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+    
+    /* Ecriture des résultat dans le fichier csv. */
+    int csvFile;
+    char fileName[30];
+    sprintf(fileName, "resultatsCPU/result%dcard.csv", numCards);
+
+    if ((csvFile = open(fileName, O_CREAT | O_WRONLY | O_APPEND, 0644)) == -1) {
+        printf("Erreur lors de l'ouverture du fichier csv.\n");
+        close(csvFile);
+    }
+
+    char stringToWrite[20];
+    int writtenBytes = 0;
+    writtenBytes = sprintf(stringToWrite, "%d;", matrixSize);
+    write(csvFile, stringToWrite, writtenBytes);
+
+    stringToWrite[0] = '\0';
+    writtenBytes = sprintf(stringToWrite, "%f;", (double)(end - begin) / CLOCKS_PER_SEC);
+    write(csvFile, stringToWrite, writtenBytes);
     // printMatrix(matrixC, matrixSize);
 
     /* Calcul de la matrice depuis le client, pour vérifier le résultat. */
-    begin = clock();
     int *cpuMatrixC = malloc (matrixSize * matrixSize * sizeof(int));
+
+    /* Utilisation de la transposée de B afin d'éviter les cache miss. */
+    begin = clock();
+    int *transposedMatrixB = malloc(matrixSize * matrixSize * sizeof(int));
+
+    for (int i = 0; i < matrixSize; i++) {
+        for (int j = 0; j < matrixSize; j++) {
+            transposedMatrixB[i * matrixSize + j] = matrixB[j * matrixSize + i];
+        }
+    }
 
     for (int i = 0; i < matrixSize; i++) {
         for (int j = 0; j < matrixSize; j++) {
             int coefficient = 0;
             for (int k = 0; k < matrixSize; k++) {
-                coefficient += matrixA[i * matrixSize + k] * matrixB[k * matrixSize + j];
+                coefficient += matrixA[i * matrixSize + k] * transposedMatrixB[j * matrixSize + k];
             }
             cpuMatrixC[i * matrixSize + j] = coefficient;
         }
     }
+
     end = clock();
-    printf("BENCHMARK : Temps de calcul CPU de la matrice C : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+
+    printf("BENCHMARK : Temps de calcul CPU de la matrice C avec B transposée : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+    
+    stringToWrite[0] = '\0';
+    writtenBytes = sprintf(stringToWrite, "%f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+    write(csvFile, stringToWrite, writtenBytes);
     // printMatrix(cpuMatrixC, matrixSize);
 
     /* Vérification du résultat obtenu. */
@@ -298,13 +313,15 @@ int main(int argc, char *argv[]) {
     erreurTotale = (erreurTotale * 100) / (matrixSize * matrixSize);
     printf("==========================================================\n\n");
     printf("Après vérification du calcul effectué par les jetson, l'erreur relative moyenne est de %.2f%%\n", erreurTotale);
-
+    
     /* Fermeture de la connexion (windows) et libération de la mémoire allouée. */
     close_connection();
+    close(csvFile);
     free(matrixA);
     free(matrixB);
     free(matrixC);
     free(cpuMatrixC);
+    free(transposedMatrixB);
     for (int n = 0; n < numCards; n++) {
         free(args[n].ipAddress);
         if (args[n].result) {

@@ -4,3 +4,6 @@ run.sh
 .vscode
 client.exe
 worker
+client
+worker.exe
+test.exe
