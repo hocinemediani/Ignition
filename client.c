@@ -253,7 +253,7 @@ int startMain(int _matrixSize, int _numCards) {
     /* Ecriture des résultat dans le fichier csv. */
     int csvFile;
     char fileName[30];
-    sprintf(fileName, "resultatsCPU/result%dcard.csv", numCards);
+    sprintf(fileName, "resultatsGPU/result%dcard.csv", numCards);
 
     if ((csvFile = open(fileName, O_CREAT | O_WRONLY | O_APPEND, 0644)) == -1) {
         printf("Erreur lors de l'ouverture du fichier csv.\n");
@@ -266,7 +266,7 @@ int startMain(int _matrixSize, int _numCards) {
     write(csvFile, stringToWrite, writtenBytes);
 
     stringToWrite[0] = '\0';
-    writtenBytes = sprintf(stringToWrite, "%f;", (double)(end - begin) / CLOCKS_PER_SEC);
+    writtenBytes = sprintf(stringToWrite, "%f\n", (double)(end - begin) / CLOCKS_PER_SEC);
     write(csvFile, stringToWrite, writtenBytes);
     // printMatrix(matrixC, matrixSize);
 
@@ -277,42 +277,42 @@ int startMain(int _matrixSize, int _numCards) {
     begin = clock();
     int *transposedMatrixB = malloc(matrixSize * matrixSize * sizeof(int));
 
-    for (int i = 0; i < matrixSize; i++) {
-        for (int j = 0; j < matrixSize; j++) {
-            transposedMatrixB[i * matrixSize + j] = matrixB[j * matrixSize + i];
-        }
-    }
+    // for (int i = 0; i < matrixSize; i++) {
+    //     for (int j = 0; j < matrixSize; j++) {
+    //         transposedMatrixB[i * matrixSize + j] = matrixB[j * matrixSize + i];
+    //     }
+    // }
 
-    for (int i = 0; i < matrixSize; i++) {
-        for (int j = 0; j < matrixSize; j++) {
-            int coefficient = 0;
-            for (int k = 0; k < matrixSize; k++) {
-                coefficient += matrixA[i * matrixSize + k] * transposedMatrixB[j * matrixSize + k];
-            }
-            cpuMatrixC[i * matrixSize + j] = coefficient;
-        }
-    }
+    // for (int i = 0; i < matrixSize; i++) {
+    //     for (int j = 0; j < matrixSize; j++) {
+    //         int coefficient = 0;
+    //         for (int k = 0; k < matrixSize; k++) {
+    //             coefficient += matrixA[i * matrixSize + k] * transposedMatrixB[j * matrixSize + k];
+    //         }
+    //         cpuMatrixC[i * matrixSize + j] = coefficient;
+    //     }
+    // }
 
-    end = clock();
+    // end = clock();
 
-    printf("BENCHMARK : Temps de calcul CPU de la matrice C avec B transposée : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+    // printf("BENCHMARK : Temps de calcul CPU de la matrice C avec B transposée : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
     
-    stringToWrite[0] = '\0';
-    writtenBytes = sprintf(stringToWrite, "%f\n", (double)(end - begin) / CLOCKS_PER_SEC);
-    write(csvFile, stringToWrite, writtenBytes);
-    // printMatrix(cpuMatrixC, matrixSize);
+    // stringToWrite[0] = '\0';
+    // writtenBytes = sprintf(stringToWrite, "%f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+    // write(csvFile, stringToWrite, writtenBytes);
+    // // printMatrix(cpuMatrixC, matrixSize);
 
-    /* Vérification du résultat obtenu. */
-    float erreurTotale = 0;
+    // /* Vérification du résultat obtenu. */
+    // float erreurTotale = 0;
 
-    for (int i = 0; i < matrixSize; i++) {
-        for (int j = 0; j < matrixSize; j++) {
-            erreurTotale += (float) abs((cpuMatrixC[i * matrixSize + j] - matrixC[i * matrixSize + j]) / cpuMatrixC[i * matrixSize + j]);
-        }
-    }
-    erreurTotale = (erreurTotale * 100) / (matrixSize * matrixSize);
+    // for (int i = 0; i < matrixSize; i++) {
+    //     for (int j = 0; j < matrixSize; j++) {
+    //         erreurTotale += (float) abs((cpuMatrixC[i * matrixSize + j] - matrixC[i * matrixSize + j]) / cpuMatrixC[i * matrixSize + j]);
+    //     }
+    // }
+    // erreurTotale = (erreurTotale * 100) / (matrixSize * matrixSize);
     printf("==========================================================\n\n");
-    printf("Après vérification du calcul effectué par les jetson, l'erreur relative moyenne est de %.2f%%\n", erreurTotale);
+    // printf("Après vérification du calcul effectué par les jetson, l'erreur relative moyenne est de %.2f%%\n", erreurTotale);
     
     /* Fermeture de la connexion (windows) et libération de la mémoire allouée. */
     close_connection();

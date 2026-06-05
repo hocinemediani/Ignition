@@ -26,7 +26,7 @@ int receiveMessage(int clientSocketFd, void *messageToReceive, int size) {
     int bytesToReceive = size;
     int bytesLeft = bytesToReceive;
     while (receivedBytes < bytesToReceive) {
-        int bytesReceived = (recv(clientSocketFd, messageToReceive + receivedBytes, bytesLeft, 0));
+        int bytesReceived = (recv(clientSocketFd, (char*) messageToReceive + receivedBytes, bytesLeft, 0));
         if (bytesReceived <= 0) {
             return -1;
         }
@@ -47,23 +47,38 @@ void printMatrix(int* matrix, int size) {
 }
 
 
+__global__
+void computeMatrices(int matrixSize, int numRows, int *matrixA, int *matrixB, int *matrixC) {
+    int index = blockIdx.x * blockDim.x + threadIdx.x;
+    int totalCoefficients = matrixSize * numRows;
+
+    if (index >= totalCoefficients) {
+        return;
+    }
+
+    int row = index / matrixSize;
+    int col = index % matrixSize;
+
+    int coefficient = 0;
+    for (int k = 0; k < matrixSize; k++) {
+        coefficient += matrixA[row * matrixSize + k] * matrixB[k * matrixSize + col];
+    }
+
+    matrixC[index] = coefficient;
+}
+
+
 int main(int argc, char* argv[]) {
     /* 0. Vérification de l'input utilisateur. */
-    int numBlocks = 0;
     int blockSize = 0;
     
-    if (argc < 3) {
-        printf("ERREUR : Spécifiez un nombre de blocks et une taille de block.\n");
+    if (argc < 2) {
+        printf("ERREUR : Spécifiez une taille de block.\n");
         exit(EXIT_FAILURE);
     }
 
-    if ((numBlocks = atoi(argv[1])) == 0) {
-        printf("ERREUR : Veuillez saisir un entier pour la taille.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    if ((blockSize = atoi(argv[2])) == 0) {
-        printf("ERREUR : Veuillez saisir un entier pour le nombre de cartes connectées.\n");
+    if ((blockSize = atoi(argv[1])) == 0) {
+        printf("ERREUR : Veuillez saisir un entier pour la taille d'un block.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -111,7 +126,8 @@ int main(int argc, char* argv[]) {
         }
         printf("Header receptionné avec succès !\n");
 
-        int *matrixA = malloc(header.numRows * header.matrixSize * sizeof(int));
+        int *matrixA;
+        cudaMallocManaged(&matrixA, header.numRows * header.matrixSize * sizeof(int));
 
         if ((receiveMessage(clientSocketFd, matrixA, header.numRows * header.matrixSize * sizeof(int))) == -1) {
             printf("Echec lors de la réception des lignes de la matrice A\n");
@@ -119,7 +135,8 @@ int main(int argc, char* argv[]) {
         }
         printf("Matrice A receptionnée avec succès !\n");
 
-        int *matrixB = malloc(header.matrixSize * header.matrixSize * sizeof(int));
+        int *matrixB;
+        cudaMallocManaged(&matrixB, header.matrixSize * header.matrixSize * sizeof(int));
 
         if ((receiveMessage(clientSocketFd, matrixB, header.matrixSize * header.matrixSize * sizeof(int))) == -1) {
             printf("Echec lors de la réception de la matrice B\n");
@@ -128,25 +145,14 @@ int main(int argc, char* argv[]) {
         printf("Matrice B receptionnée avec succès !\n");
 
         /* 3. Calculer les lignes de la matrice C correspondantes. */
-        int *matrixC = malloc(header.numRows * header.matrixSize * sizeof(int));
+        int *matrixC;
+        cudaMallocManaged(&matrixC, header.numRows * header.matrixSize * sizeof(int));
 
-        int *transposedMatrixB = malloc(header.matrixSize * header.matrixSize * sizeof(int));
+        int numBlocks = (header.matrixSize * header.numRows + blockSize - 1) / blockSize;
+        computeMatrices<<<numBlocks, blockSize>>>(header.matrixSize, header.numRows, matrixA, matrixB, matrixC);
 
-        for (int i = 0; i < header.matrixSize; i++) {
-            for (int j = 0; j < header.matrixSize; j++) {
-                transposedMatrixB[i * header.matrixSize + j] = matrixB[j * header.matrixSize + i];
-            }
-        }
-
-        for (int i = 0; i < header.numRows; i++) {
-            for (int j = 0; j < header.matrixSize; j++) {
-                int coefficient = 0;
-                for (int k = 0; k < header.matrixSize; k++) {
-                    coefficient += matrixA[i * header.matrixSize + k] * transposedMatrixB[j * header.matrixSize + k];
-                }
-                matrixC[i * header.matrixSize + j] = coefficient;
-            }
-        }
+        /* On attends que le GPU ait fini les tâches assignées. */
+        cudaDeviceSynchronize();
 
         /* 4. Envoyer les lignes sur le réseau et se remettre en attente d'une connexion. */
         end = clock();
@@ -172,10 +178,9 @@ int main(int argc, char* argv[]) {
 
         printf("Confirmation de l'envoi de la matrice C.\n");
         
-        free(matrixA);
-        free(matrixB);
-        free(matrixC);
-        free(transposedMatrixB);
+        cudaFree(matrixA);
+        cudaFree(matrixB);
+        cudaFree(matrixC);
         close(clientSocketFd);
     }
     close(socketFd);
