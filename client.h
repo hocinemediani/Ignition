@@ -8,4 +8,4 @@
 
 #define NUM_CARDS 6
 
-int startMain(int _matrixSize);
+int startMain(int _matrixSize, int priority);

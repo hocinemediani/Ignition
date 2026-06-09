@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
-#include <time.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -13,12 +12,8 @@ typedef struct messageHeader {
     int matrixSize;
     int numRows;
     int matrixOffset;
+    int priority;
 } messageHeader;
-
-
-/* Timers pour le benchmark. */
-clock_t begin;
-clock_t end;
 
 
 int receiveMessage(int clientSocketFd, void *messageToReceive, int size) {
@@ -101,15 +96,13 @@ int main(int argc, char* argv[]) {
             printf("Problème lors de l'initialisation de la connexion client/serveur.\n");
             continue;
         }
-        begin = clock();
+
         /* 2. Récupérer le header, les lignes de la matrice A et la matrice B. */
         struct messageHeader header;
 
         if ((receiveMessage(clientSocketFd, &header, sizeof(header))) == -1) {
-            printf("Echec lors de la réception du header\n");
             continue;
         }
-        printf("Header receptionné avec succès !\n");
 
         int *matrixA = malloc(header.numRows * header.matrixSize * sizeof(int));
 
@@ -117,7 +110,6 @@ int main(int argc, char* argv[]) {
             printf("Echec lors de la réception des lignes de la matrice A\n");
             continue;
         }
-        printf("Matrice A receptionnée avec succès !\n");
 
         int *matrixB = malloc(header.matrixSize * header.matrixSize * sizeof(int));
 
@@ -125,7 +117,6 @@ int main(int argc, char* argv[]) {
             printf("Echec lors de la réception de la matrice B\n");
             continue;
         }
-        printf("Matrice B receptionnée avec succès !\n");
 
         /* 3. Calculer les lignes de la matrice C correspondantes. */
         int *matrixC = malloc(header.numRows * header.matrixSize * sizeof(int));
@@ -149,14 +140,6 @@ int main(int argc, char* argv[]) {
         }
 
         /* 4. Envoyer les lignes sur le réseau et se remettre en attente d'une connexion. */
-        end = clock();
-
-        printf("\n==========================================================\n");
-        printf("BENCHMARK : Temps de calcul total : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
-        printf("==========================================================\n\n");
-
-        printf("Fin des calculs, début de l'envoi.\n");
-
         int sentBytes = 0;
         int size = header.numRows * header.matrixSize * sizeof(int);
         int bytesToSend = size;

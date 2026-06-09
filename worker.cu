@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <string.h>
 #include <time.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -14,12 +15,21 @@ typedef struct messageHeader {
     int matrixSize;
     int numRows;
     int matrixOffset;
+    int priority;
 } messageHeader;
 
+/* Timer pour benchmarks. */
+time_t begin;
+time_t end;
 
-/* Timers pour le benchmark. */
-clock_t begin;
-clock_t end;
+/* Booléen pour la terminaison du processus. */
+volatile sig_atomic_t isRunning = 1;
+
+
+void sigIntHandler(int sig) {
+    isRunning = 0;
+}
+
 
 /** Méthode helper afin de recevoir un bloc d'information depuis le réseau.
  * @param clientSocketFd Le file descriptor du socket vers lequel sont envoyées les informations
@@ -91,6 +101,12 @@ void computeMatrices(int matrixSize, int numRows, int *matrixA, int *matrixB, in
 
 
 int main(int argc, char* argv[]) {
+    /* Récupération du signal SIGINT pour fermer proprement le socket. */
+    struct sigaction act;
+    memset(&act, 0, sizeof(act));
+    act.sa_handler = sigIntHandler;
+    sigaction(SIGINT, &act, NULL);
+
     /* 0. Vérification de l'input utilisateur. */
     int blockSize = 0;
     
@@ -130,7 +146,7 @@ int main(int argc, char* argv[]) {
     }
 
     /* On écoute constamment pour pouvoir traiter des demandes à la chaine. */
-    while(1) {
+    while(isRunning == 1) {
         printf("Ecoute sur le port : %d\n", port);
 
         int clientSocketFd;
@@ -141,13 +157,10 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        begin = clock();
-
         /* 2. Récupérer le header, les lignes de la matrice A et la matrice B. */
         struct messageHeader header;
 
         if ((receiveMessage(clientSocketFd, &header, sizeof(header))) == -1) {
-            printf("Echec lors de la réception du header\n");
             continue;
         }
 
@@ -171,6 +184,7 @@ int main(int argc, char* argv[]) {
         int *matrixC;
         cudaMallocManaged(&matrixC, header.numRows * header.matrixSize * sizeof(int));
 
+        begin = clock();
         int numBlocks = (header.matrixSize * header.numRows + blockSize - 1) / blockSize;
         
         /* On copie en VRAM les données utiles. */
@@ -184,11 +198,11 @@ int main(int argc, char* argv[]) {
         cudaDeviceSynchronize();
         end = clock();
 
+        printf("\n==========================================================\n");
+        printf("BENCHMARK : Temps de calcul de la matrice C : %f\n", (double)(end - begin) / CLOCKS_PER_SEC);
+        printf("==========================================================\n\n");
+
         /* 4. Envoyer les lignes sur le réseau et se remettre en attente d'une connexion. */
-
-        printf("Fin des calculs, début de l'envoi.\n");
-
-        /* Envoi sur le réseau. */
         int sentBytes = 0;
         int size = header.numRows * header.matrixSize * sizeof(int);
         int bytesToSend = size;
@@ -201,6 +215,8 @@ int main(int argc, char* argv[]) {
             sentBytes += bytesSent;
             bytesToSend -= bytesSent;
         }
+        
+        printf("Confirmation de l'envoi de la matrice C.\n");
         
         cudaFree(matrixA);
         cudaFree(matrixB);

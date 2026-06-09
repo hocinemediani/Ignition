@@ -22,6 +22,7 @@
     #include <sys/socket.h>
     #include <arpa/inet.h>
     #include <netinet/in.h>
+    #include <sys/ioctl.h>
 
     typedef int socket_t;
     #define CLOSE_SOCKET close
@@ -38,6 +39,7 @@ typedef struct pthread_args {
     int numRows;
     int matrixOffset;
     char* ipAddress;
+    int priority;
 } pthread_args;
 
 
@@ -46,6 +48,7 @@ typedef struct messageHeader {
     int matrixSize;
     int numRows;
     int matrixOffset;
+    int priority;
 } messageHeader;
 
 /* Timers pour le benchmark. */
@@ -151,9 +154,12 @@ void* threadMain(void* _arg) {
     header.matrixSize = matrixSize;
     header.numRows = matrixSize / numConnectedCards;
     header.matrixOffset = arg->connectedIndex * header.numRows * header.matrixSize;
+    header.priority = arg->priority;
+
     if (arg->connectedIndex == (numConnectedCards - 1)) {
         header.numRows = header.numRows + (matrixSize % numConnectedCards);
     }
+
     /* Mise à jour des informations récupérables en dehors du thread. */
     arg->numRows = header.numRows;
     arg->matrixOffset = header.matrixOffset;
@@ -197,9 +203,36 @@ void* threadMain(void* _arg) {
 }
 
 
+void setNonBlocking(socket_t clientSocket) {
+    #ifdef _WIN32
+        u_long mode = 1;
+        ioctlsocket(clientSocket, FIONBIO, &mode);
+    #else
+        int flags = fcntl(clientSocket, F_GETFL, 0);
+        fcntl(clientSocket, F_SETFL, flags | O_NONBLOCK);
+    #endif
+}
+
+
+/** Détecte sur le réseau la présence de cartes jetsons et
+ * incrémente connectedCards en conséquence.
+ * @param args Les paramètres de thread contenant les informations sur l'adresse ip des cartes
+ * @param connectedCards Le nombre de cartes connectées et découvertes
+ */
 void checkConnectedJetsons(pthread_args *args, int* connectedCards) {
-    printf("\n==========================================================\n");
+    printf("\n\n\n==========================================================\n");
     printf("Détection des cartes présentes sur le réseau...\n");
+
+    struct fd_set socketWriteSet;
+    FD_ZERO(&socketWriteSet);
+
+    TIMEVAL timeout;
+    timeout.tv_sec = 0;
+    timeout.tv_usec = 500000;
+
+    SOCKET clientSockets[NUM_CARDS];
+    int maxSocketFd = 0;
+
     for (int i = 0; i < NUM_CARDS; i++) {
         /* Récuperation de la structure contenant des informations. */
         pthread_args *arg = &args[i];
@@ -218,14 +251,27 @@ void checkConnectedJetsons(pthread_args *args, int* connectedCards) {
         serverAddress.sin_family = AF_INET;
         serverAddress.sin_port = htons(port);
 
-        if ((connect(clientSocket, (struct sockaddr *) &serverAddress, sizeof(serverAddress))) == -1) {
+        setNonBlocking(clientSocket);
+
+        connect(clientSocket, (struct sockaddr *) &serverAddress, sizeof(serverAddress));
+        clientSockets[i] = clientSocket;
+        FD_SET(clientSockets[i], &socketWriteSet);
+
+        if ((int) clientSocket > maxSocketFd) maxSocketFd = clientSockets[i];
+    }
+    
+    select(maxSocketFd + 1, NULL, &socketWriteSet, NULL, &timeout);
+
+    for (int i = 0; i < NUM_CARDS; i++) {
+        if (FD_ISSET(clientSockets[i], &socketWriteSet) != 0) {
+            connectedCards[i] = 1;
+            printf("La orin-nano-%d est présente sur le réseau.\n", i);
+        } else {
+            printf("La orin-nano-%d n'est pas présente sur le réseau.\n", i);
             connectedCards[i] = 0;
-            printf("La orin-nano-%d n'est pas présente sur le réseau.\n", arg->index);
-            continue;
         }
-        printf("La orin-nano-%d est présente sur le réseau.\n", arg->index);
-        CLOSE_SOCKET(clientSocket);
-        connectedCards[i] = 1;
+
+        CLOSE_SOCKET(clientSockets[i]);
     }
     printf("==========================================================\n\n");
 }
@@ -240,7 +286,7 @@ void checkConnectedJetsons(pthread_args *args, int* connectedCards) {
  * - Reconstruire l'information finale,
  * - Vérifier la conformité de l'information et mesurer le temps total pour un calcul par CPU et par GPU distribué.
 */
-int startMain(int _matrixSize) {
+int startMain(int _matrixSize, int priority) {
     numConnectedCards = 0;
     init_connection();
 
@@ -260,6 +306,7 @@ int startMain(int _matrixSize) {
         args[n].result = NULL;
         args[n].numRows = 0;
         args[n].matrixOffset = 0;
+        args[n].priority = priority;
     }
 
     int* connectedCards = malloc(NUM_CARDS * sizeof(int));
