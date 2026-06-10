@@ -4,11 +4,10 @@
 #include <pthread.h>
 #include <string.h>
 #include <fcntl.h>
-#include <sys/types.h>
-#include <sys/stat.h>
 
-#define MAX_FILEPATH_LENGTH 128
-#define ORCHESTRATOR_PORT 8796
+#define NUM_CARDS 6
+#define PORT 8796
+#define MAX_NUM_CONNECTION 15
 
 /* Instructions préprocesseur pour différencier les architectures linux de windows qui ont des imports différents. */
 #ifdef _WIN32
@@ -40,6 +39,20 @@
     void close_connection() {};
 #endif
 
+/* Structure pour envoyer et récupérer les informations par le socket. */
+typedef struct pthread_args {
+    int index;
+    int connectedIndex;
+    void* result;
+    char* ipAddress;
+    int priority;
+} pthread_args;
+
+typedef struct monitoringMessage {
+    char type[6];
+    int sizeLeft;
+} monitoringMessage;
+
 /* Structure d'en-tête pour notifier de la taille des informations transitant. */
 typedef struct messageHeader {
     int messageSize;
@@ -48,8 +61,12 @@ typedef struct messageHeader {
 
 int sendMessage(socket_t clientSocket, const char *messageToSend, int size);
 
-void readFromFile(int fileSize, int cudaFileFd, char *fileString, char *filePath);
+void* threadMain(void* _arg);
 
-int getFileSize(char *filePath, int *cudaFileFd);
+void setNonBlocking(socket_t clientSocket);
 
-int receiveMessage(int clientSocketFd, void *messageToReceive, int size);
+void checkConnectedJetsons(int* connectedCards);
+
+void initializeAndStartThreads(pthread_args *args, int *connectedCards, pthread_t *threads);
+
+int main();

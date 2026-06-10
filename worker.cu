@@ -10,11 +10,9 @@
 #include <netinet/in.h>
 
 
-/* Structure d'en-tête pour notifier la carte worker de la taille des informations. */
+/* Structure d'en-tête pour notifier de la taille des informations transitant. */
 typedef struct messageHeader {
-    int matrixSize;
-    int numRows;
-    int matrixOffset;
+    int messageSize;
     int priority;
 } messageHeader;
 
@@ -185,17 +183,7 @@ int main(int argc, char* argv[]) {
         cudaMallocManaged(&matrixC, header.numRows * header.matrixSize * sizeof(int));
 
         begin = clock();
-        int numBlocks = (header.matrixSize * header.numRows + blockSize - 1) / blockSize;
         
-        /* On copie en VRAM les données utiles. */
-        cudaMemPrefetchAsync(matrixA, header.numRows * header.matrixSize * sizeof(int), 0, 0);
-        cudaMemPrefetchAsync(matrixB, header.matrixSize * header.matrixSize * sizeof(int), 0, 0);
-        cudaMemPrefetchAsync(matrixC, header.matrixSize * header.matrixSize * sizeof(int), 0, 0);
-
-        computeMatrices<<<numBlocks, blockSize>>>(header.matrixSize, header.numRows, matrixA, matrixB, matrixC);
-
-        /* On attends que le GPU ait fini les tâches assignées. */
-        cudaDeviceSynchronize();
         end = clock();
 
         printf("\n==========================================================\n");
