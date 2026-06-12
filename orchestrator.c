@@ -6,11 +6,63 @@ int numConnectedCards = 0;
 /* Index de la dernière carte connectée. */
 int lastCardIndex = 0;
 
+/* Indique si l'orchestrateur doit continuer à fonctionner ou non. */
+volatile sig_atomic_t isRunning = 1;
+
 /* Premier offset d'adresses IP. */
 int destinationOffset = 94;
 
 /* Tableau contenant les places en file d'attente de chaque worker. */
 int workerQueues[NUM_CARDS];
+/* Tableau représentant l'état des différents workers (1 -> connecté, 0 -> non connecté). */
+int connectedCards[NUM_CARDS];
+
+/* Garde en mémoire l'ID de tâche le plus haut. */
+int currentTaskID = 0;
+/* Fais la correspondance entre socket client et ID de tâche. */
+int routingTable[MAX_CONCURRENT_TASKS];
+
+/* Initialisation des threads de traitement clients. */
+pthread_t clientHandlerThreads[MAX_NUM_CONNECTION];
+
+/* Initialisation des threads de traitements des cartes. */
+pthread_t jetsonListenerThreads[NUM_CARDS];
+
+/* Initialisation des arguments de chaque thread. */
+pthread_args args[MAX_NUM_CONNECTION];
+/* Initialisation des arguments de chaque thread. */
+pthread_args workerArgs[NUM_CARDS];
+
+/* Initialisation du verrou global des files d'attente. */
+pthread_mutex_t queueMutex;
+/* Initialisation du tableau de verrou pour l'envoi aux workers. */
+pthread_mutex_t workerMutexes[NUM_CARDS];
+/* Initialisation du verrou pour l'indentificant de tâche. */
+pthread_mutex_t idMutex;
+
+/* Tableau de socket pour les clients. */
+socket_t socketTable[MAX_NUM_CONNECTION];
+/* Tableau de socket pour les workers. */
+socket_t workerSocketTable[NUM_CARDS];
+
+
+void sigIntHandler(int sig) {
+    (void) sig;
+    isRunning = 0;
+}
+
+
+void initInteruptHandling() {
+    #ifdef _WIN32
+        signal(SIGINT, sigIntHandler);
+    #else
+        /* Récupération du signal SIGINT pour fermer proprement le socket. */
+        struct sigaction action;
+        memset(&action, 0, sizeof(action));
+        act.sa_handler = sigIntHandler;
+        sigaction(SIGINT, &action, NULL);
+    #endif
+}
 
 
 /** Méthode helper afin de recevoir un bloc d'information depuis le réseau.
@@ -19,7 +71,7 @@ int workerQueues[NUM_CARDS];
  * @param size La taille du message à recevoir
  * @return -1 si l'envoi à échoué, 0 si l'envoi s'est bien déroulé
  */
-int receiveMessage(int clientSocketFd, void *messageToReceive, int size) {
+int receiveMessage(socket_t clientSocketFd, void *messageToReceive, int size) {
     int receivedBytes = 0;
     int bytesToReceive = size;
     int bytesLeft = bytesToReceive;
@@ -56,67 +108,9 @@ int sendMessage(socket_t clientSocket, const char *messageToSend, int size) {
 }
 
 
-/** Point d'entrée pour chaque thread afin de créer les sockets et
- * gérer l'envoi et la reception des informations utiles.
- * @param _args Un structure contenant les informations utiles à l'échange
+/** Passe le socket clientSocket en mode non-bloquant.
+ * @param clientSocket Le socket à rendre non-bloquant
  */
-void* threadMain(void* _arg) {
-    /* Récuperation de la structure contenant des informations. */
-    pthread_args *arg = (pthread_args*) _arg;
-    /* 3. Créer un socket pour se connecter à une jetson nano. */
-    int port = 5798;
-    int destinationOffset = 94;
-    socket_t clientSocket = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in serverAddress;
-
-    memset(&serverAddress, 0, sizeof(serverAddress));
-
-    /* Instantiation des paramètres du socket. */
-    arg->ipAddress = malloc(16 * sizeof(char));
-    sprintf(arg->ipAddress, "147.127.121.%d", arg->index + destinationOffset);
-    serverAddress.sin_addr.s_addr = inet_addr(arg->ipAddress);
-    serverAddress.sin_family = AF_INET;
-    serverAddress.sin_port = htons(port);
-
-    if ((connect(clientSocket, (struct sockaddr *) &serverAddress, sizeof(serverAddress))) == -1) {
-        printf("ERREUR : Connexion échouée à la jetson nano orin-nano-%d\n", arg->index);
-        goto end_connection;
-    }
-    printf("Connexion réussie à la jetson nano orin-nano-%d\n", arg->index);
-
-    /* 4. Envoyer l'en-tête, les paramètres et le fichier .c. */
-    
-    /* Instantiation du header. */
-    struct messageHeader header;
-    header.priority = arg->priority;
-
-    /* On envoie le header réseau. */
-    if ((sendMessage(clientSocket, (const char *) &header, sizeof(header))) == -1) {
-        printf("ERREUR : L'envoi du header à orin-nano-%d s'est mal déroulé\n", arg->index);
-        goto end_connection;
-    }
-    
-    /* 5. Attendre la réception des résultats pour reconstruire la matrice C. */
-    int receivedBytes = 0;
-    int bytesToReceive = 0 * sizeof(int);
-    int bytesLeft = bytesToReceive;
-    arg->result = malloc(bytesToReceive); 
-    while (receivedBytes < bytesToReceive) {
-        int bytesReceived = (recv(clientSocket, (char*) arg->result + receivedBytes, bytesLeft, 0));
-        if (bytesReceived <= 0) {
-            printf("ERREUR : Echec lors de la réception du résultat depuis orin-nano-%d\n", arg->index);
-            goto end_connection;
-        }
-        receivedBytes += bytesReceived;
-        bytesLeft -= bytesReceived;
-    }
-    printf("Confirmation de la réception de la matrice C de orin-nano-%d\n", arg->index);
-    end_connection:
-    CLOSE_SOCKET(clientSocket);
-    return NULL;
-}
-
-
 void setNonBlocking(socket_t clientSocket) {
     #ifdef _WIN32
         u_long mode = 1;
@@ -129,10 +123,10 @@ void setNonBlocking(socket_t clientSocket) {
 
 
 /** Détecte sur le réseau la présence de cartes jetsons et
- * incrémente connectedCards en conséquence.
- * @param connectedCards Le nombre de cartes connectées et découvertes
+ * incrémente connectedCards en conséquence. Conserve également
+ * dans la workerSocketTable les sockets vers les workers.
  */
-void checkConnectedJetsons(int* connectedCards) {
+void checkConnectedJetsons() {
     printf("\n\n\n==========================================================\n");
     printf("Détection des cartes présentes sur le réseau...\n");
 
@@ -189,6 +183,7 @@ void checkConnectedJetsons(int* connectedCards) {
             for (int k = 0; k < NUM_CARDS; k++) {
                 if (FD_ISSET(jetsonSockets[k], &socketWriteSet) != 0) {
                     connectedCards[k] = 1;
+                    workerSocketTable[k] = jetsonSockets[k];
                     FD_CLR(jetsonSockets[k], &socketWriteSet);
                 }
             }
@@ -202,43 +197,8 @@ void checkConnectedJetsons(int* connectedCards) {
         } else {
             printf("La orin-nano-%d est présente sur le réseau.\n", i);
         }
-        CLOSE_SOCKET(jetsonSockets[i]);
     }
     printf("==========================================================\n\n");
-}
-
-
-/** Initialise les threads avec des informations comme l'adresse à laquelle se connecter,
- * l'index du thread et la priorité de la tâche.
- */
-void initializeAndStartThreads(pthread_args *args, int *connectedCards, pthread_t *threads) {
-    /* Initialisation des arguments des threads. */
-    for (int n = 0; n < NUM_CARDS; n++) {
-        args[n].index = n;
-        args[n].result = NULL;
-        args[n].priority = 0;
-        args[n].ipAddress = malloc(16 * sizeof(char));
-        sprintf(args[n].ipAddress, "147.127.121.%d", n + destinationOffset);
-    }
-
-    /* Récupération du nombre effectif de cartes connectées et assignation de l'indice logique. */
-    for (int i = 0; i < NUM_CARDS; i++) {
-        if (connectedCards[i] == 1) {
-            args[i].connectedIndex = numConnectedCards;
-            numConnectedCards++;
-            lastCardIndex = i;
-        }
-    }
-
-    /* Création des threads.*/
-    for (int n = 0; n < NUM_CARDS; n++) {
-        if (connectedCards[n] == 0) {
-            continue;
-        }
-        if ((pthread_create(&threads[n], NULL, threadMain, &args[n])) != 0) {
-            printf("ERREUR : Le thread n'a pas pu être créé.\n");
-        }
-    }
 }
 
 
@@ -269,18 +229,122 @@ void initializeSocket(socket_t *orchestratorSocket) {
 }
 
 
-void handleConnection(socket_t *clientSocket) {
-    /* 5. Envoyer la tache à la carte la moins utilisée. */
-    /* 6. Réceptionner les résultats. */
-    /* 7. Envoyer le résultat au client concerné. */
+/** Ecoute sur le réseau pour récupérer les informations depuis
+ * le client auquel le thread est assigné.
+ * @param _arg Les arguments utiles au thread
+ */
+void* clientListening(void* _arg) {
+    pthread_args *arg = (pthread_args *) _arg;
+    /* Récupérer le header depuis le client. */
+    struct messageHeader header;
+    if (receiveMessage(arg->socket, &header, sizeof(header)) == -1) {
+        printf("ERREUR : La réception du header du client %d s'est mal passée.\n", arg->index);
+        return NULL;
+    }
+
+    /* 5. Récupérer le fichier .cu depuis le clientSocket. */
+    char *fileString = malloc(header.messageSize * sizeof(char));
+    if (receiveMessage(arg->socket, fileString, header.messageSize * sizeof(char)) == -1) {
+        printf("ERREUR : La réception du fichier .cu n'a pas aboutie.\n");
+        return NULL;
+    }
+
+    /* 6. Trouver la carte la moins utilisée par exploration de workerQueues. */
+    int tries = 1;
+    try_queues:
+    pthread_mutex_lock(&queueMutex);
+    int minQueue = -1;
+    int minQueueIndex = -1;
+
+    for (int i = 0; i < NUM_CARDS; i++) {
+        if ((workerQueues[i] > minQueue) && (connectedCards[i] == 1)) {
+            minQueue = workerQueues[i];
+            minQueueIndex = i;
+        }
+    }
+
+    /* L'exploration est finie, on libère le verrou et on change manuellement le nombre de places dans la file d'attente. */
+    workerQueues[minQueueIndex]--;
+    pthread_mutex_unlock(&queueMutex);
+
+    /* Si toutes les cartes sont prises, on ré-essaye de trouver une carte libre. */
+    if (minQueue == -1) {
+        if (tries == 5) return NULL;
+        tries++;
+        goto try_queues;
+    }
+
+    /* 7. Envoyer la tache à la carte la moins utilisée. */
+    pthread_mutex_lock(&idMutex);
+    header.taskID = currentTaskID;
+    routingTable[currentTaskID] = arg->socket;
+    currentTaskID = (currentTaskID + 1) % MAX_CONCURRENT_TASKS;
+    pthread_mutex_unlock(&idMutex);
+
+    pthread_mutex_lock(&workerMutexes[minQueueIndex]);
+    if (sendMessage(workerSocketTable[minQueueIndex], (const char *) &header, sizeof(header)) == -1) {
+        printf("ERREUR : L'envoi du header à la orin-nano-%d à échoué.\n", minQueueIndex);
+        return NULL;
+    }
+
+    if (sendMessage(workerSocketTable[minQueueIndex], fileString, header.messageSize * sizeof(char)) == -1) {
+        printf("ERREUR : L'envoi de la tâche à la orin-nano-%d à échoué.\n", minQueueIndex);
+        return NULL;
+    }
+    pthread_mutex_unlock(&workerMutexes[minQueueIndex]);
+
+    return NULL;
 }
 
 
-void getInformationFromWorker(socket_t *socket) {
-    
+/** Gère le lancement des threads pour les connexions clients.
+ * @param clientSocket Le socket sur lequel le client communique
+ * @param index L'index du client (ignoré)
+ */
+void handleConnection(socket_t clientSocket, int index) {
+    args[index].socket = clientSocket;
+    args[index].index = index;
+    args[index].priority = -1;
+    if (pthread_create(&clientHandlerThreads[index], NULL, clientListening, &args[index]) != 0) {
+        printf("ERREUR : Le thread d'écoute client n'a pas pu être lancé.\n");
+    } else {
+        pthread_detach(clientHandlerThreads[index]);
+    }
 }
 
 
+/** Permet de recevoir les messages de monitoring de la
+ * part des workers.
+ * @param workerSocket Le socket depuis lequel récupérer les informations.
+ * @param workerIndex L'index de la carte
+ */
+void getInformationFromWorker(socket_t workerSocket, int workerIndex) {
+    /* Recevoir le header d'information. */
+    struct monitoringMessage message;
+    memset(&message, 0, sizeof(message));
+
+    if (receiveMessage(workerSocket, &message, sizeof(message)) == -1) {
+        printf("ERREUR : Le message de monitoring de la carte orin-nano-%d n'a pas pu être reçu.\n", workerIndex);
+        return;
+    }
+
+    if (strcmp(message.type, "INFO") == 0) {
+        /* Si son type est INFO, mettre à jour l'entrée correspondante de workerQueues. */
+        workerQueues[workerIndex] = message.sizeLeft;
+    } else if (strcmp(message.type, "HELLO") == 0) {
+        /* Si son type est HELLO, déclarer connectedCards[i] = 1. */
+        connectedCards[workerIndex] = 1;
+    } else if (strcmp(message.type, "BYE") == 0) {
+        /* Si son type est BYE, déclarer connectedCards[i] = 0. */
+        connectedCards[workerIndex] = 0;
+    }
+}
+
+
+/** Thread d'écoute de l'état des workers, qui appelle
+ * getInformationFromWorker lorsque l'un des sockets change
+ * d'état.
+*/
 void* listenToWorkers(void *) {
     for (int i = 0; i < NUM_CARDS; i++) {
         workerQueues[i] = 0;
@@ -311,13 +375,24 @@ void* listenToWorkers(void *) {
         exit(EXIT_FAILURE);
     }
 
-    while (1) {
-        checkForConnections(&workersReadSet, &monitoringSocket, monitoringSocketTable, sizeof(monitoringSocketTable), 1, getInformationFromWorker);
+    while (isRunning == 1) {
+        checkForConnections(&workersReadSet, &monitoringSocket, monitoringSocketTable, NUM_CARDS, 1, getInformationFromWorker);
     }
+    return NULL;
 }
 
 
-void checkForConnections(fd_set *fdSet, socket_t *mainSocket, int *socketTable, int tableSize, int read, void handler(socket_t *)) {
+/** Fonction helper pour écouter sur un set de socket
+ * et appeler la fonction handler lorsque un des socket
+ * voit son état changer.
+ * @param fdSet Le set à surveiller
+ * @param mainSocket Le socket principal inséré en premier
+ * @param socketTable La table contenant les différents sockets à écouter
+ * @param tableSize La table de la socketTable
+ * @param read Vaut 1 si le set est un read set et 0 sinon
+ * @param handler Fonction à appeler lorsqu'un socket change d'état
+ */
+void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTable, int tableSize, int read, void handler(socket_t, int)) {
     SOCKET clientSocket;
     struct sockaddr_in clientAddress;
     int addressLength = sizeof(struct sockaddr_in);
@@ -331,7 +406,7 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, int *socketTable, 
     FD_SET(*mainSocket, fdSet);
 
     /* Insertion des sockets clients connus dans le set du select. */
-    int highestSocketFd = 0;
+    int highestSocketFd = *mainSocket;
     for (int i = 0; i < tableSize; i++) {
         if (socketTable[i] == 0) {
             continue;
@@ -346,10 +421,15 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, int *socketTable, 
     }
     
     /* 3. Accepter les connexions entrantes et stocker les sockets. */
+    int selectReturn = -1;
     if (read == 1) {
-        select(highestSocketFd, fdSet, NULL, NULL, &timeout);
+        selectReturn = select(highestSocketFd + 1, fdSet, NULL, NULL, &timeout);
     } else {
-        select(highestSocketFd, NULL, fdSet, NULL, &timeout);
+        selectReturn = select(highestSocketFd + 1, NULL, fdSet, NULL, &timeout);
+    }
+
+    if (selectReturn < 0) {
+        return;
     }
 
     /* Si le socket du serveur est prêt (il reçoit une requête), on l'accepte. */
@@ -375,43 +455,112 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, int *socketTable, 
         }
         if (FD_ISSET(socketTable[i], fdSet)) {
             /* 4. Traiter les demandes lorsqu'elles arrivent (réception du header puis du fichier .cu). */
-            handler(&socketTable[i]);
+            handler(socketTable[i], i);
             socketTable[i] = 0;
         }
     }
 }
 
 
-/** Fonction principale permettant de :
- * - Vérifier les inputs,
- * - Créer les matrices,
- * - Créer les sockets,
- * - Envoyer l'information utile,
- * - Réceptionner les résultats des cartes jetson,
- * - Reconstruire l'information finale,
- * - Vérifier la conformité de l'information et mesurer le temps total pour un calcul par CPU et par GPU distribué.
-*/
+/** Thread propre à chaque connexion à un carte,
+ * permettant d'écouter pour réceptionner les résultats depuis
+ * cette dernière.
+ * @param _arg Les paramètres utiles au thread
+ */
+void* workerListening(void* _arg) {
+    pthread_args *arg = (pthread_args *) _arg;
+
+    while (isRunning == 1) {
+        /* 8. Réceptionner les résultats. */
+        struct messageHeader header;
+        if (receiveMessage(arg->socket, &header, sizeof(header)) == -1) {
+            printf("ERREUR : Le header n'a pas pu être reçu depuis la orin-nano-%d", arg->index);
+            return NULL;
+        }
+
+        char *resultString = malloc(header.messageSize * sizeof(char));
+        if (receiveMessage(arg->socket, resultString, header.messageSize * sizeof(char)) == -1) {
+            printf("ERREUR : La réception du résultat depuis orin-nano-%d à échoué.\n", arg->index);
+            return NULL;
+        }
+
+        /* 9. Envoyer le résultat au client concerné. */
+        if (sendMessage(routingTable[header.taskID], (const char *) &header, sizeof(header)) == -1) {
+            printf("ERREUR : Le header n'a pas pu être envoyé au client.\n");
+            goto end_task;
+        }
+
+        if (sendMessage(routingTable[header.taskID], resultString, header.messageSize * sizeof(char)) == -1) {
+            printf("ERREUR : Le résultat n'a pas pu être envoyé au client.\n");
+        }
+
+        end_task:
+        routingTable[header.taskID] = 0;
+        CLOSE_SOCKET(routingTable[header.taskID]);
+        free(resultString);
+    }
+
+    return NULL;
+}
+
+
+/** Fonction principale. */
 int main(void) {
+    initInteruptHandling();
+
     /* Initialisation de la connexion windows. */
     init_connection();
 
-    /* 1. Créer un socket pour accepter les connexions entrantes. */
+    /* Initialisation de la taille restante des queues des workers. */
+    for (int i = 0; i < NUM_CARDS; i++) {
+        workerQueues[i] = -1;
+    }
+
+    /* Initilisation des verrous de worker et du verrou global de consultation des files d'attente. */
+    pthread_mutex_init(&queueMutex, NULL);
+    pthread_mutex_init(&idMutex, NULL);
+    for (int i = 0; i < NUM_CARDS; i++) {
+        pthread_mutex_init(&workerMutexes[i], NULL);
+    }
+
+    /* 1. Créer un socket pour accepter les connexions client entrantes. */
     socket_t orchestratorSocket;
     initializeSocket(&orchestratorSocket);
 
-    /* 2. Garder en mémoire tous les sockets actuellement utilisés. */
+    /* 2. Garder en mémoire tous les sockets client et worker actuellement utilisés. */
     struct fd_set socketReadSet;
 
-    socket_t socketTable[MAX_NUM_CONNECTION];
     for (int i = 0; i < MAX_NUM_CONNECTION; i++) {
         socketTable[i] = 0;
     }
 
-    /* Récupèration du nombre de cartes connectées et leurs index. */
-    int connectedCards[NUM_CARDS];
-    checkConnectedJetsons(connectedCards);
+    for (int i = 0; i < NUM_CARDS; i++) {
+        workerSocketTable[i] = 0;
+    }
 
-    /* Thread d'écoute de l'état des workers. */
+    memset(routingTable, 0, sizeof(routingTable));
+    memset(jetsonListenerThreads, 0, sizeof(jetsonListenerThreads));
+    memset(clientHandlerThreads, 0, sizeof(clientHandlerThreads));
+
+    /* Récuperation du nombre de cartes connectées et de leurs index. */
+    checkConnectedJetsons();
+
+    /* Instantiation des threads d'écoute pour les workers. */
+    for (int i = 0; i < NUM_CARDS; i++) {
+        if (connectedCards[i] == 0) {
+            continue;
+        }
+        workerArgs[i].socket = workerSocketTable[i];
+        workerArgs[i].index = i;
+        workerArgs[i].priority = -1;
+        if (pthread_create(&jetsonListenerThreads[i], NULL, workerListening, &workerArgs[i]) != 0) {
+            printf("ERREUR : Le thread d'écoute worker n'a pas pu être lancé.\n");
+        } else {
+            pthread_detach(jetsonListenerThreads[i]);
+        }
+    }
+
+    /* Lancement du thread d'écoute de l'état des workers. */
     pthread_t workerStateThread;
     if ((pthread_create(&workerStateThread, NULL, listenToWorkers, NULL)) != 0) {
         printf("ERREUR : La création du thread d'écoute de l'état des cartes à échoué.\n");
@@ -419,33 +568,11 @@ int main(void) {
     }
 
     /* Boucle de fonctionnement de l'orchestrateur. */
-    while (1) {
-        checkForConnections(&socketReadSet, &orchestratorSocket, socketTable, sizeof(socketTable), 1, handleConnection);
-        
-        /* 2. Créer NUM_CARDS thread pour gérer les sockets et le résultat de chaque worker. */
-        pthread_t *threads = malloc(NUM_CARDS * sizeof(pthread_t));
-        pthread_args *args = malloc(NUM_CARDS * sizeof(pthread_args));
-
-        /* Initialisation et création des threads. */
-        initializeAndStartThreads(args, connectedCards, threads);
-
-        /* Attente de la terminaison des threads. */
-        for (int n = 0; n < NUM_CARDS; n++) {
-            pthread_join(threads[n], NULL);
-        }
-        
-        /* Fermeture de la connexion (windows) et libération de la mémoire allouée. */
-        close_connection();
-        for (int n = 0; n < NUM_CARDS; n++) {
-            free(args[n].ipAddress);
-            if (args[n].result) {
-                free(args[n].result);
-            }
-        }
-        free(threads);
-        free(args);
+    while (isRunning == 1) {
+        checkForConnections(&socketReadSet, &orchestratorSocket, socketTable, MAX_NUM_CONNECTION, 1, handleConnection);
     }
-
-    WSACleanup();
+    /* Fermeture de la connexion (windows) et libération de la mémoire allouée. */
+    close_connection();
+    printf("Fermeture de l'orchestrateur.\n");
     return 0;
 }

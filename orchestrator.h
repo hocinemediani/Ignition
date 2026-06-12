@@ -4,10 +4,12 @@
 #include <pthread.h>
 #include <string.h>
 #include <fcntl.h>
+#include <signal.h>
 
 #define NUM_CARDS 6
 #define PORT 8796
 #define MAX_NUM_CONNECTION 15
+#define MAX_CONCURRENT_TASKS 25
 
 /* Instructions préprocesseur pour différencier les architectures linux de windows qui ont des imports différents. */
 #ifdef _WIN32
@@ -42,12 +44,11 @@
 /* Structure pour envoyer et récupérer les informations par le socket. */
 typedef struct pthread_args {
     int index;
-    int connectedIndex;
-    void* result;
-    char* ipAddress;
     int priority;
+    socket_t socket;
 } pthread_args;
 
+/* Structure pour récupérer des informations utiles depuis les workers. */
 typedef struct monitoringMessage {
     char type[6];
     int sizeLeft;
@@ -57,16 +58,33 @@ typedef struct monitoringMessage {
 typedef struct messageHeader {
     int messageSize;
     int priority;
+    int taskID;
 } messageHeader;
+
+void sigIntHandler(int sig);
+
+void initInteruptHandling();
+
+int receiveMessage(socket_t clientSocketFd, void *messageToReceive, int size);
 
 int sendMessage(socket_t clientSocket, const char *messageToSend, int size);
 
-void* threadMain(void* _arg);
-
 void setNonBlocking(socket_t clientSocket);
 
-void checkConnectedJetsons(int* connectedCards);
+void checkConnectedJetsons();
 
-void initializeAndStartThreads(pthread_args *args, int *connectedCards, pthread_t *threads);
+void initializeSocket(socket_t *orchestratorSocket);
+
+void* clientListening(void* _arg);
+
+void handleConnection(socket_t clientSocket, int index);
+
+void getInformationFromWorker(socket_t workerSocket, int workerIndex);
+
+void* listenToWorkers(void *);
+
+void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTable, int tableSize, int read, void handler(socket_t, int));
+
+void* workerListening(void* _arg);
 
 int main();

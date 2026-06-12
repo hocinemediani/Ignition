@@ -1,31 +1,63 @@
-/* Objectif, calculer les numRows lignes de la matrice C puis les envoyer au serveur. */
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <string.h>
-#include <time.h>
 #include <signal.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
-
 /* Structure d'en-tête pour notifier de la taille des informations transitant. */
 typedef struct messageHeader {
     int messageSize;
     int priority;
+    int taskID;
 } messageHeader;
 
-/* Timer pour benchmarks. */
-time_t begin;
-time_t end;
+/* Structure à envoyer sur le port 9988 pour informer d'un changement d'état de connexion ou de file d'attente. */
+typedef struct monitoringMessage {
+    /* Possible : HELLO, BYE, INFO. */
+    char type[6];
+    int sizeLeft;
+} monitoringMessage;
 
 /* Booléen pour la terminaison du processus. */
 volatile sig_atomic_t isRunning = 1;
 
 
+void initInteruptHandling() {
+    /* Récupération du signal SIGINT pour fermer proprement le socket. */
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    act.sa_handler = sigIntHandler;
+    sigaction(SIGINT, &action, NULL);
+}
+
+
 void sigIntHandler(int sig) {
+    (void) sig;
     isRunning = 0;
+}
+
+
+/** Méthode helper afin d'envoyer un bloc d'information dans le socket clientSocket.
+ * @param clientSocket Le socket depuis lequel envoyer les informations
+ * @param messageToSend Le message à envoyer
+ * @param size La taille du message à envoyer
+ * @return -1 si l'envoi à échoué, 0 si l'envoi s'est bien déroulé
+ */
+int sendMessage(socket_t clientSocket, const char *messageToSend, int size) {
+    int sentBytes = 0;
+    int bytesToSend = size;
+    while (sentBytes < size) {
+        int bytesSent = (send(clientSocket, messageToSend + sentBytes, bytesToSend, 0));
+        if (bytesSent == -1) {
+            return -1;
+        }
+        sentBytes += bytesSent;
+        bytesToSend -= bytesSent;
+    }
+    return 0;
 }
 
 
@@ -51,72 +83,8 @@ int receiveMessage(int clientSocketFd, void *messageToReceive, int size) {
 }
 
 
-/** Méthode helper pour initialiser les matrices avec
- * des coefficients aléatoires.
- * @param matrixSize La taille des matrices
- */
-void printMatrix(int* matrix, int size) {
-    for (int k = 0; k < size * size; k++) {
-        printf("%d\t", matrix[k]);
-        if (k != 0 && (k % size) == (size - 1)) {
-            printf("\n");
-        }
-    }
-}
-
-
-/** Fonction helper permettant de calculer le produit C = AxB et de
- * mettre le résultat dans C.
- * @param matrixSize La taille des matrices
- * @param numRows Le nombre de lignes de A que l'on à
- * @param matrixA La matrice A
- * @param matrixB La matrice B
- * @param matrixC La matrice C à calculer
- */
-__global__
-void computeMatrices(int matrixSize, int numRows, int *matrixA, int *matrixB, int *matrixC) {
-    /* Numéro du thread actuel. */
-    int index = blockIdx.x * blockDim.x + threadIdx.x;
-    int totalCoefficients = matrixSize * numRows;
-
-    if (index >= totalCoefficients) {
-        return;
-    }
-
-    /* A quelle ligne de la matrice le coefficient de ce thread se trouve t'il. */
-    int row = index / matrixSize;
-    /* A quelle colonne de la matrice le coefficient de ce thread se trouve t'il. */
-    int col = index % matrixSize;
-
-    int coefficient = 0;
-    /* A i et j fixé, on parcours la ligne de A et la colonne de B. */
-    for (int k = 0; k < matrixSize; k++) {
-        coefficient += matrixA[row * matrixSize + k] * matrixB[k * matrixSize + col];
-    }
-
-    matrixC[index] = coefficient;
-}
-
-
 int main(int argc, char* argv[]) {
-    /* Récupération du signal SIGINT pour fermer proprement le socket. */
-    struct sigaction act;
-    memset(&act, 0, sizeof(act));
-    act.sa_handler = sigIntHandler;
-    sigaction(SIGINT, &act, NULL);
-
-    /* 0. Vérification de l'input utilisateur. */
-    int blockSize = 0;
-    
-    if (argc < 2) {
-        printf("ERREUR : Spécifiez une taille de block.\n");
-        exit(EXIT_FAILURE);
-    }
-
-    if ((blockSize = atoi(argv[1])) == 0) {
-        printf("ERREUR : Veuillez saisir un entier pour la taille d'un block.\n");
-        exit(EXIT_FAILURE);
-    }
+    initInteruptHandling();
 
     /* 1. Mettre en place le socket pour la communication réseau et accepter les connexions entrantes. */
     int socketFd;
@@ -148,7 +116,7 @@ int main(int argc, char* argv[]) {
         printf("Ecoute sur le port : %d\n", port);
 
         int clientSocketFd;
-        socklen_t addressLength = sizeof(struct sockaddr_in);
+        socklen_t addressLength = sizeof(addressLength);
 
         if ((clientSocketFd = accept(socketFd,(struct sockaddr *) &socketAddress, &addressLength)) == -1) {
             printf("Problème lors de l'initialisation de la connexion client/serveur.\n");
