@@ -50,8 +50,10 @@ typedef struct pthread_args {
 
 /* Structure pour récupérer des informations utiles depuis les workers. */
 typedef struct monitoringMessage {
+    /* Possible types : HELLO, BYE, INFO. */
     char type[6];
     int sizeLeft;
+    int workerIndex;
 } monitoringMessage;
 
 /* Structure d'en-tête pour notifier de la taille des informations transitant. */

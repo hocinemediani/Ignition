@@ -1,0 +1,2 @@
+gcc -Wall -Wextra client.c -l"ws2_32" -o client 
+gcc -Wall -Wextra orchestrator.c -l"ws2_32" -o orchestrator 

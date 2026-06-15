@@ -235,12 +235,28 @@ void initializeSocket(socket_t *orchestratorSocket) {
  */
 void* clientListening(void* _arg) {
     pthread_args *arg = (pthread_args *) _arg;
+
+    fd_set socketReadSet;
+
+    struct timeval timeout;
+    timeout.tv_sec = 1;
+    timeout.tv_usec = 0;
+
+    int selectReturn = 0;
+    while (selectReturn <= 0) {
+        FD_ZERO(&socketReadSet);
+        FD_SET(arg->socket, &socketReadSet);
+        selectReturn = select(arg->socket + 1, &socketReadSet, NULL, NULL, &timeout);
+    }
+    selectReturn = 0;
+
     /* Récupérer le header depuis le client. */
     struct messageHeader header;
     if (receiveMessage(arg->socket, &header, sizeof(header)) == -1) {
         printf("ERREUR : La réception du header du client %d s'est mal passée.\n", arg->index);
         return NULL;
     }
+    printf("Réception du header du client %d.\n", arg->index);
 
     /* 5. Récupérer le fichier .cu depuis le clientSocket. */
     char *fileString = malloc(header.messageSize * sizeof(char));
@@ -248,6 +264,7 @@ void* clientListening(void* _arg) {
         printf("ERREUR : La réception du fichier .cu n'a pas aboutie.\n");
         return NULL;
     }
+    printf("Réception du fichier .cu du client %d.\n", arg->index);
 
     /* 6. Trouver la carte la moins utilisée par exploration de workerQueues. */
     int tries = 1;
@@ -263,16 +280,21 @@ void* clientListening(void* _arg) {
         }
     }
 
-    /* L'exploration est finie, on libère le verrou et on change manuellement le nombre de places dans la file d'attente. */
-    workerQueues[minQueueIndex]--;
-    pthread_mutex_unlock(&queueMutex);
-
     /* Si toutes les cartes sont prises, on ré-essaye de trouver une carte libre. */
-    if (minQueue == -1) {
-        if (tries == 5) return NULL;
+    if (minQueue <= 0) {
+        if (tries == 5) {
+            printf("ERREUR : Aucune carte ne peut accepter de tâche pour le moment.\n");
+            return NULL;
+        }
+
         tries++;
         goto try_queues;
     }
+    printf("La carte la moins remplie est la orin-nano-%d.\n", minQueueIndex);
+
+    /* L'exploration est finie, on libère le verrou et on change manuellement le nombre de places dans la file d'attente. */
+    workerQueues[minQueueIndex]++;
+    pthread_mutex_unlock(&queueMutex);
 
     /* 7. Envoyer la tache à la carte la moins utilisée. */
     pthread_mutex_lock(&idMutex);
@@ -286,11 +308,13 @@ void* clientListening(void* _arg) {
         printf("ERREUR : L'envoi du header à la orin-nano-%d à échoué.\n", minQueueIndex);
         return NULL;
     }
+    printf("Envoi du header réussi à la orin-nano-%d.\n", minQueueIndex);
 
     if (sendMessage(workerSocketTable[minQueueIndex], fileString, header.messageSize * sizeof(char)) == -1) {
         printf("ERREUR : L'envoi de la tâche à la orin-nano-%d à échoué.\n", minQueueIndex);
         return NULL;
     }
+    printf("Envoi de la tâche réussie à la orin-nano-%d.\n", minQueueIndex);
     pthread_mutex_unlock(&workerMutexes[minQueueIndex]);
 
     return NULL;
@@ -299,7 +323,7 @@ void* clientListening(void* _arg) {
 
 /** Gère le lancement des threads pour les connexions clients.
  * @param clientSocket Le socket sur lequel le client communique
- * @param index L'index du client (ignoré)
+ * @param index L'index du client
  */
 void handleConnection(socket_t clientSocket, int index) {
     args[index].socket = clientSocket;
@@ -308,6 +332,7 @@ void handleConnection(socket_t clientSocket, int index) {
     if (pthread_create(&clientHandlerThreads[index], NULL, clientListening, &args[index]) != 0) {
         printf("ERREUR : Le thread d'écoute client n'a pas pu être lancé.\n");
     } else {
+        printf("Création du thread d'écoute client numéro %d.\n", index);
         pthread_detach(clientHandlerThreads[index]);
     }
 }
@@ -319,24 +344,37 @@ void handleConnection(socket_t clientSocket, int index) {
  * @param workerIndex L'index de la carte
  */
 void getInformationFromWorker(socket_t workerSocket, int workerIndex) {
+    (void) workerIndex;
+    printf("Un message à été reçu ! J'essaie de le recevoir.\n");
+
     /* Recevoir le header d'information. */
     struct monitoringMessage message;
     memset(&message, 0, sizeof(message));
 
     if (receiveMessage(workerSocket, &message, sizeof(message)) == -1) {
-        printf("ERREUR : Le message de monitoring de la carte orin-nano-%d n'a pas pu être reçu.\n", workerIndex);
+        printf("ERREUR : Le message de monitoring d'une des cartes n'a pas pu être reçu.\n");
         return;
     }
+    printf("Header d'information reçu pour la orin-nano-%d, type : %s.\n", message.workerIndex, message.type);
 
     if (strcmp(message.type, "INFO") == 0) {
         /* Si son type est INFO, mettre à jour l'entrée correspondante de workerQueues. */
-        workerQueues[workerIndex] = message.sizeLeft;
+        workerQueues[message.workerIndex] = message.sizeLeft;
+        
+        /* Affichage informatif. */
+        printf("\nEtat des files d'attentes :\n");
+        for (int i = 0; i < NUM_CARDS; i++) {
+            printf("File d'attente orin-nano-%d : %d\n", i, workerQueues[i]);
+        }
+        printf("\n");
     } else if (strcmp(message.type, "HELLO") == 0) {
         /* Si son type est HELLO, déclarer connectedCards[i] = 1. */
-        connectedCards[workerIndex] = 1;
+        printf("Connexion de la carte orin-nano-%d\n", message.workerIndex);
+        connectedCards[message.workerIndex] = 1;
     } else if (strcmp(message.type, "BYE") == 0) {
         /* Si son type est BYE, déclarer connectedCards[i] = 0. */
-        connectedCards[workerIndex] = 0;
+        printf("Déconnexion de la carte orin-nano-%d\n", message.workerIndex);
+        connectedCards[message.workerIndex] = 0;
     }
 }
 
@@ -352,6 +390,10 @@ void* listenToWorkers(void *) {
 
     struct fd_set workersReadSet;
     socket_t monitoringSocketTable[NUM_CARDS];
+
+    for (int i = 0; i < NUM_CARDS; i++) {
+        monitoringSocketTable[i] = 0;
+    }
 
     socket_t monitoringSocket;
     if ((monitoringSocket = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) {
@@ -430,6 +472,8 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
 
     if (selectReturn < 0) {
         return;
+    } else if (selectReturn > 0) { 
+        printf("%d sockets ont changé d'état.\n", selectReturn);
     }
 
     /* Si le socket du serveur est prêt (il reçoit une requête), on l'accepte. */
@@ -438,6 +482,7 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
             printf("ERREUR : La connexion au client s'est mal passée.\n");
             return;
         }
+        printf("Une nouvelle connexion s'est produite, insertion dans la table de socket.\n");
 
         /* On insère le socket reçu dans le premier espace libre du tableau. */
         for (int i = 0; i < tableSize; i++) {
@@ -455,8 +500,8 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
         }
         if (FD_ISSET(socketTable[i], fdSet)) {
             /* 4. Traiter les demandes lorsqu'elles arrivent (réception du header puis du fichier .cu). */
+            printf("Traitement de la connexion.\n");
             handler(socketTable[i], i);
-            socketTable[i] = 0;
         }
     }
 }
@@ -471,33 +516,53 @@ void* workerListening(void* _arg) {
     pthread_args *arg = (pthread_args *) _arg;
 
     while (isRunning == 1) {
+        fd_set socketReadSet;
+
+        struct timeval timeout;
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+
+        int selectReturn = 0;
+        while (selectReturn <= 0) {
+            FD_ZERO(&socketReadSet);
+            FD_SET(arg->socket, &socketReadSet);
+            selectReturn = select(arg->socket + 1, &socketReadSet, NULL, NULL, &timeout);
+        }
+        selectReturn = 0;
+
         /* 8. Réceptionner les résultats. */
         struct messageHeader header;
         if (receiveMessage(arg->socket, &header, sizeof(header)) == -1) {
-            printf("ERREUR : Le header n'a pas pu être reçu depuis la orin-nano-%d", arg->index);
-            return NULL;
+            printf("ERREUR : Le header n'a pas pu être reçu depuis la orin-nano-%d\n", arg->index);
+            goto end;
         }
+        printf("Réception d'un header depuis la orin-nano-%d.\n", arg->index);
 
         char *resultString = malloc(header.messageSize * sizeof(char));
         if (receiveMessage(arg->socket, resultString, header.messageSize * sizeof(char)) == -1) {
             printf("ERREUR : La réception du résultat depuis orin-nano-%d à échoué.\n", arg->index);
-            return NULL;
+            goto end_task;
         }
+        printf("Réception du résultat depuis la orin-nano-%d.\n", arg->index);
 
         /* 9. Envoyer le résultat au client concerné. */
         if (sendMessage(routingTable[header.taskID], (const char *) &header, sizeof(header)) == -1) {
             printf("ERREUR : Le header n'a pas pu être envoyé au client.\n");
             goto end_task;
         }
+        printf("Envoi du header au client depuis la orin-nano-%d.\n", arg->index);
 
         if (sendMessage(routingTable[header.taskID], resultString, header.messageSize * sizeof(char)) == -1) {
             printf("ERREUR : Le résultat n'a pas pu être envoyé au client.\n");
         }
+        printf("Envoi du résultat au client depuis la orin-nano-%d.\n", arg->index);
 
         end_task:
-        routingTable[header.taskID] = 0;
         CLOSE_SOCKET(routingTable[header.taskID]);
+        routingTable[header.taskID] = 0;
         free(resultString);
+        end:
+        printf("Réception terminée, coupure de la connexion au client depuis la orin-nano-%d\n", arg->index);
     }
 
     return NULL;
@@ -507,14 +572,17 @@ void* workerListening(void* _arg) {
 /** Fonction principale. */
 int main(void) {
     initInteruptHandling();
+    printf("Gestion des interruptions initialisée.\n");
 
     /* Initialisation de la connexion windows. */
     init_connection();
+    printf("Connexion initialisée.\n");
 
     /* Initialisation de la taille restante des queues des workers. */
     for (int i = 0; i < NUM_CARDS; i++) {
         workerQueues[i] = -1;
     }
+    printf("File d'attente des workers initialisée.\n");
 
     /* Initilisation des verrous de worker et du verrou global de consultation des files d'attente. */
     pthread_mutex_init(&queueMutex, NULL);
@@ -522,10 +590,12 @@ int main(void) {
     for (int i = 0; i < NUM_CARDS; i++) {
         pthread_mutex_init(&workerMutexes[i], NULL);
     }
+    printf("Mutexes des queues, id de tâche et des cartes initialisés.\n");
 
     /* 1. Créer un socket pour accepter les connexions client entrantes. */
     socket_t orchestratorSocket;
     initializeSocket(&orchestratorSocket);
+    printf("Socket de l'orchestrateur initialisé.\n");
 
     /* 2. Garder en mémoire tous les sockets client et worker actuellement utilisés. */
     struct fd_set socketReadSet;
@@ -537,6 +607,7 @@ int main(void) {
     for (int i = 0; i < NUM_CARDS; i++) {
         workerSocketTable[i] = 0;
     }
+    printf("Tables de sockets client et worker initialisées.\n");
 
     memset(routingTable, 0, sizeof(routingTable));
     memset(jetsonListenerThreads, 0, sizeof(jetsonListenerThreads));
@@ -557,6 +628,7 @@ int main(void) {
             printf("ERREUR : Le thread d'écoute worker n'a pas pu être lancé.\n");
         } else {
             pthread_detach(jetsonListenerThreads[i]);
+            printf("Lancement du thread d'écoute pour la orin-nano-%d.\n", workerArgs[i].index);
         }
     }
 
@@ -566,11 +638,13 @@ int main(void) {
         printf("ERREUR : La création du thread d'écoute de l'état des cartes à échoué.\n");
         exit(EXIT_FAILURE);
     }
+    printf("Lancement du thread d'écoute de l'état des workers.\n");
 
     /* Boucle de fonctionnement de l'orchestrateur. */
     while (isRunning == 1) {
         checkForConnections(&socketReadSet, &orchestratorSocket, socketTable, MAX_NUM_CONNECTION, 1, handleConnection);
     }
+    
     /* Fermeture de la connexion (windows) et libération de la mémoire allouée. */
     close_connection();
     printf("Fermeture de l'orchestrateur.\n");

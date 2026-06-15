@@ -168,27 +168,36 @@ int main (int argc, char *argv[]) {
     struct messageHeader header;
     header.messageSize = fileSize;
     header.priority = 1;
+    header.taskID = 0;
 
-    sendMessage(clientSocket, (const char *) &header, sizeof(header));
-    sendMessage(clientSocket, fileString, fileSize);
-
-    close(cudaFileFd);
-    free(fileString);
+    if (sendMessage(clientSocket, (const char *) &header, sizeof(header)) == -1) {
+        printf("ERREUR : L'envoi du header s'est mal déroulé.\n");
+        goto cleanup;
+    }
+    
+    if (sendMessage(clientSocket, fileString, fileSize) == -1) {
+        printf("ERREUR : L'envoi du fichier .cu n'a pas pu aboutir.\n");
+        goto cleanup;
+    }
 
     /* 3. Attente de réception des résultats depuis l'orchestrateur. */
     memset(&header, 0, sizeof(header));
 
     if (receiveMessage(clientSocket, &header, sizeof(header)) == -1) {
         printf("ERREUR : La réception du header s'est mal déroulée.\n");
-        exit(EXIT_FAILURE);
+        goto cleanup;
     }
 
     char *results = malloc(header.messageSize * sizeof(char));
     if (receiveMessage(clientSocket, results, header.messageSize * sizeof(char)) == -1) {
         printf("ERREUR : La réception des résultats s'est mal déroulée.\n");
-        exit(EXIT_FAILURE);
+        goto cleanup;
     }
 
     printf("Résultats reçus : \n%s", results);
+
+    cleanup:
+    close(cudaFileFd);
+    free(fileString);
     return 0;
 }
