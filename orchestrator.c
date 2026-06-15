@@ -44,6 +44,8 @@ pthread_mutex_t idMutex;
 socket_t socketTable[MAX_NUM_CONNECTION];
 /* Tableau de socket pour les workers. */
 socket_t workerSocketTable[NUM_CARDS];
+/* Tableau de socket pour le monitoring. */
+socket_t monitoringSocketTable[NUM_CARDS];
 
 
 void sigIntHandler(int sig) {
@@ -122,83 +124,17 @@ void setNonBlocking(socket_t clientSocket) {
 }
 
 
-/** Détecte sur le réseau la présence de cartes jetsons et
- * incrémente connectedCards en conséquence. Conserve également
- * dans la workerSocketTable les sockets vers les workers.
+/** Passe le socket clientSocket en mode bloquant.
+ * @param clientSocket Le socket à rendre bloquant
  */
-void checkConnectedJetsons() {
-    printf("\n\n\n==========================================================\n");
-    printf("Détection des cartes présentes sur le réseau...\n");
-
-    struct fd_set socketWriteSet;
-    FD_ZERO(&socketWriteSet);
-
-    SOCKET jetsonSockets[NUM_CARDS];
-    int maxSocketFd = 0;
-
-    for (int i = 0; i < NUM_CARDS; i++) {
-        connectedCards[i] = 0;
-
-        /* Créer un socket pour tester la connexion à une jetson nano. */
-        int port = 5798;
-        socket_t connectionTestingSocket = socket(AF_INET, SOCK_STREAM, 0);
-        struct sockaddr_in jetsonAddress;
-
-        memset(&jetsonAddress, 0, sizeof(jetsonAddress));
-
-        /* Instantiation des paramètres du socket. */
-        char ipAddress[16];
-        memset(ipAddress, 0, sizeof(ipAddress));
-        sprintf(ipAddress, "147.127.121.%d", i + destinationOffset);
-        jetsonAddress.sin_addr.s_addr = inet_addr(ipAddress);
-        jetsonAddress.sin_family = AF_INET;
-        jetsonAddress.sin_port = htons(port);
-        
-        /* On rend le socket non-bloquant pour pouvoir essayer la connexion sur plusieurs cartes à la fois. */
-        setNonBlocking(connectionTestingSocket);
-        connect(connectionTestingSocket, (struct sockaddr *) &jetsonAddress, sizeof(jetsonAddress));
-        jetsonSockets[i] = connectionTestingSocket;
-
-        /* Récupération du descripteur de socket maximum, pour le select sur systèmes UNIX. */
-        if ((int) connectionTestingSocket > maxSocketFd) maxSocketFd = jetsonSockets[i];
-    }
-    
-    /* Vérification de l'état du lien avec les cartes. */
-    for (int i = 0; i < 10; i++) {
-        TIMEVAL timeout;
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 50000;
-
-        FD_ZERO(&socketWriteSet);
-        
-        /* A chaque select, on insère dans le set les cartes n'ayant pas été détectées. */
-        for (int j = 0; j < NUM_CARDS; j++) {
-            if (connectedCards[j] == 0) {
-                FD_SET(jetsonSockets[j], &socketWriteSet);
-            }
-        }
-
-        /* Si au moins un descripteur à eu un changement d'état.*/
-        if (select(maxSocketFd + 1, NULL, &socketWriteSet, NULL, &timeout) > 0) {
-            for (int k = 0; k < NUM_CARDS; k++) {
-                if (FD_ISSET(jetsonSockets[k], &socketWriteSet) != 0) {
-                    connectedCards[k] = 1;
-                    workerSocketTable[k] = jetsonSockets[k];
-                    FD_CLR(jetsonSockets[k], &socketWriteSet);
-                }
-            }
-        }
-    }
-
-    /* Pour l'affichage et la fermeture des sockets ouverts. */
-    for (int i = 0; i < NUM_CARDS; i++) {
-        if (connectedCards[i] == 0) {
-            printf("La orin-nano-%d n'est pas présente sur le réseau.\n", i);
-        } else {
-            printf("La orin-nano-%d est présente sur le réseau.\n", i);
-        }
-    }
-    printf("==========================================================\n\n");
+void setBlocking(socket_t clientSocket) {
+    #ifdef _WIN32
+        u_long mode = 0;
+        ioctlsocket(clientSocket, FIONBIO, &mode);
+    #else
+        int flags = fcntl(clientSocket, F_GETFL, 0);
+        fcntl(clientSocket, F_SETFL, flags & ~O_NONBLOCK);
+    #endif
 }
 
 
@@ -247,6 +183,7 @@ void* clientListening(void* _arg) {
         FD_ZERO(&socketReadSet);
         FD_SET(arg->socket, &socketReadSet);
         selectReturn = select(arg->socket + 1, &socketReadSet, NULL, NULL, &timeout);
+        if (selectReturn == -1) goto cleanup;
     }
     selectReturn = 0;
 
@@ -268,8 +205,8 @@ void* clientListening(void* _arg) {
 
     /* 6. Trouver la carte la moins utilisée par exploration de workerQueues. */
     int tries = 1;
-    try_queues:
     pthread_mutex_lock(&queueMutex);
+    try_queues:
     int minQueue = -1;
     int minQueueIndex = -1;
 
@@ -284,6 +221,8 @@ void* clientListening(void* _arg) {
     if (minQueue <= 0) {
         if (tries == 5) {
             printf("ERREUR : Aucune carte ne peut accepter de tâche pour le moment.\n");
+            CLOSE_SOCKET(arg->socket);
+            pthread_mutex_unlock(&queueMutex);
             return NULL;
         }
 
@@ -293,7 +232,7 @@ void* clientListening(void* _arg) {
     printf("La carte la moins remplie est la orin-nano-%d.\n", minQueueIndex);
 
     /* L'exploration est finie, on libère le verrou et on change manuellement le nombre de places dans la file d'attente. */
-    workerQueues[minQueueIndex]++;
+    workerQueues[minQueueIndex]--;
     pthread_mutex_unlock(&queueMutex);
 
     /* 7. Envoyer la tache à la carte la moins utilisée. */
@@ -306,17 +245,17 @@ void* clientListening(void* _arg) {
     pthread_mutex_lock(&workerMutexes[minQueueIndex]);
     if (sendMessage(workerSocketTable[minQueueIndex], (const char *) &header, sizeof(header)) == -1) {
         printf("ERREUR : L'envoi du header à la orin-nano-%d à échoué.\n", minQueueIndex);
-        return NULL;
+        goto cleanup;
     }
     printf("Envoi du header réussi à la orin-nano-%d.\n", minQueueIndex);
 
     if (sendMessage(workerSocketTable[minQueueIndex], fileString, header.messageSize * sizeof(char)) == -1) {
         printf("ERREUR : L'envoi de la tâche à la orin-nano-%d à échoué.\n", minQueueIndex);
-        return NULL;
+        goto cleanup;
     }
     printf("Envoi de la tâche réussie à la orin-nano-%d.\n", minQueueIndex);
+    cleanup:
     pthread_mutex_unlock(&workerMutexes[minQueueIndex]);
-
     return NULL;
 }
 
@@ -334,6 +273,7 @@ void handleConnection(socket_t clientSocket, int index) {
     } else {
         printf("Création du thread d'écoute client numéro %d.\n", index);
         pthread_detach(clientHandlerThreads[index]);
+        socketTable[index] = 0;
     }
 }
 
@@ -345,7 +285,6 @@ void handleConnection(socket_t clientSocket, int index) {
  */
 void getInformationFromWorker(socket_t workerSocket, int workerIndex) {
     (void) workerIndex;
-    printf("Un message à été reçu ! J'essaie de le recevoir.\n");
 
     /* Recevoir le header d'information. */
     struct monitoringMessage message;
@@ -353,28 +292,77 @@ void getInformationFromWorker(socket_t workerSocket, int workerIndex) {
 
     if (receiveMessage(workerSocket, &message, sizeof(message)) == -1) {
         printf("ERREUR : Le message de monitoring d'une des cartes n'a pas pu être reçu.\n");
+        CLOSE_SOCKET(workerSocket);
+        monitoringSocketTable[workerIndex] = 0;
         return;
     }
     printf("Header d'information reçu pour la orin-nano-%d, type : %s.\n", message.workerIndex, message.type);
 
     if (strcmp(message.type, "INFO") == 0) {
         /* Si son type est INFO, mettre à jour l'entrée correspondante de workerQueues. */
+        pthread_mutex_lock(&queueMutex);
         workerQueues[message.workerIndex] = message.sizeLeft;
+        pthread_mutex_unlock(&queueMutex);
         
         /* Affichage informatif. */
         printf("\nEtat des files d'attentes :\n");
         for (int i = 0; i < NUM_CARDS; i++) {
-            printf("File d'attente orin-nano-%d : %d\n", i, workerQueues[i]);
+            if (connectedCards[i] != 0) {
+                printf("File d'attente orin-nano-%d : %d/%d\n", i, MAX_QUEUE_SIZE - workerQueues[i], MAX_QUEUE_SIZE);
+            }
         }
         printf("\n");
     } else if (strcmp(message.type, "HELLO") == 0) {
+        /* Créer et stocker le socket. */
+        int port = 5798;
+        socket_t connectionTestingSocket = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in jetsonAddress;
+
+        memset(&jetsonAddress, 0, sizeof(jetsonAddress));
+
+        /* Instantiation des paramètres du socket. */
+        char ipAddress[16];
+        memset(ipAddress, 0, sizeof(ipAddress));
+        sprintf(ipAddress, "147.127.121.%d", message.workerIndex + destinationOffset);
+
+        jetsonAddress.sin_addr.s_addr = inet_addr(ipAddress);
+        jetsonAddress.sin_family = AF_INET;
+        jetsonAddress.sin_port = htons(port);
+
+        if (connect(connectionTestingSocket, (struct sockaddr *) &jetsonAddress, sizeof(jetsonAddress)) == -1) {
+            printf("ERREUR : La connexion à la carte orin-nano-%d est impossible.\n", message.workerIndex);
+            return;
+        }
+        workerSocketTable[message.workerIndex] = connectionTestingSocket;
+
+        workerArgs[message.workerIndex].socket = workerSocketTable[message.workerIndex];
+        workerArgs[message.workerIndex].index = message.workerIndex;
+        workerArgs[message.workerIndex].priority = -1;
+
+        if (pthread_create(&jetsonListenerThreads[message.workerIndex], NULL, workerListening, &workerArgs[message.workerIndex]) != 0) {
+            printf("ERREUR : Le thread d'écoute worker n'a pas pu être lancé.\n");
+        } else {
+            pthread_detach(jetsonListenerThreads[message.workerIndex]);
+            printf("Lancement du thread d'écoute pour la orin-nano-%d.\n", workerArgs[message.workerIndex].index);
+        }
+
         /* Si son type est HELLO, déclarer connectedCards[i] = 1. */
         printf("Connexion de la carte orin-nano-%d\n", message.workerIndex);
         connectedCards[message.workerIndex] = 1;
     } else if (strcmp(message.type, "BYE") == 0) {
         /* Si son type est BYE, déclarer connectedCards[i] = 0. */
         printf("Déconnexion de la carte orin-nano-%d\n", message.workerIndex);
+
+        pthread_mutex_lock(&queueMutex);
+        workerQueues[message.workerIndex] = 0;
+        pthread_mutex_unlock(&queueMutex);
+
+
+        CLOSE_SOCKET(workerSocket);
+        monitoringSocketTable[workerIndex] = 0;
         connectedCards[message.workerIndex] = 0;
+        CLOSE_SOCKET(workerSocketTable[message.workerIndex]);
+        workerSocketTable[message.workerIndex] = 0;
     }
 }
 
@@ -389,7 +377,6 @@ void* listenToWorkers(void *) {
     }
 
     struct fd_set workersReadSet;
-    socket_t monitoringSocketTable[NUM_CARDS];
 
     for (int i = 0; i < NUM_CARDS; i++) {
         monitoringSocketTable[i] = 0;
@@ -472,8 +459,6 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
 
     if (selectReturn < 0) {
         return;
-    } else if (selectReturn > 0) { 
-        printf("%d sockets ont changé d'état.\n", selectReturn);
     }
 
     /* Si le socket du serveur est prêt (il reçoit une requête), on l'accepte. */
@@ -507,9 +492,8 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
 }
 
 
-/** Thread propre à chaque connexion à un carte,
- * permettant d'écouter pour réceptionner les résultats depuis
- * cette dernière.
+/** Thread propre à chaque connexion à une carte, permettant
+ *  d'écouter pour réceptionner les résultats depuis cette dernière.
  * @param _arg Les paramètres utiles au thread
  */
 void* workerListening(void* _arg) {
@@ -527,8 +511,8 @@ void* workerListening(void* _arg) {
             FD_ZERO(&socketReadSet);
             FD_SET(arg->socket, &socketReadSet);
             selectReturn = select(arg->socket + 1, &socketReadSet, NULL, NULL, &timeout);
+            if (selectReturn == -1) goto end;
         }
-        selectReturn = 0;
 
         /* 8. Réceptionner les résultats. */
         struct messageHeader header;
@@ -612,25 +596,6 @@ int main(void) {
     memset(routingTable, 0, sizeof(routingTable));
     memset(jetsonListenerThreads, 0, sizeof(jetsonListenerThreads));
     memset(clientHandlerThreads, 0, sizeof(clientHandlerThreads));
-
-    /* Récuperation du nombre de cartes connectées et de leurs index. */
-    checkConnectedJetsons();
-
-    /* Instantiation des threads d'écoute pour les workers. */
-    for (int i = 0; i < NUM_CARDS; i++) {
-        if (connectedCards[i] == 0) {
-            continue;
-        }
-        workerArgs[i].socket = workerSocketTable[i];
-        workerArgs[i].index = i;
-        workerArgs[i].priority = -1;
-        if (pthread_create(&jetsonListenerThreads[i], NULL, workerListening, &workerArgs[i]) != 0) {
-            printf("ERREUR : Le thread d'écoute worker n'a pas pu être lancé.\n");
-        } else {
-            pthread_detach(jetsonListenerThreads[i]);
-            printf("Lancement du thread d'écoute pour la orin-nano-%d.\n", workerArgs[i].index);
-        }
-    }
 
     /* Lancement du thread d'écoute de l'état des workers. */
     pthread_t workerStateThread;

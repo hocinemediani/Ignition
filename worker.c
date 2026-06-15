@@ -79,23 +79,28 @@ int sendMessage(int clientSocket, const char *messageToSend, int size) {
 }
 
 
-void sigIntHandler(int sig) {
-    (void) sig;
-    
-    char hostname[1024];
-    gethostname(hostname, 1023);
-
+int sendMonitoringMessage(int sizeLeft, char *type) {
     struct monitoringMessage message;
-    message.sizeLeft = 0;
-    strcpy(message.type, "BYE");
+    message.sizeLeft = sizeLeft;
+    strcpy(message.type, type);
     message.workerIndex = workerIndex;
 
     if (sendMessage(monitoringSocket, (const char *) &message, sizeof(message)) == -1) {
-        printf("ERREUR : L'envoi du message de déconnexion s'est mal passé.\n");
-    } else {
-        printf("Envoi du message de déconnexion réussi.\n");
+        printf("ERREUR : Le message de monitoring %s n'a pas pu être envoyé.\n", type);
+        return -1;
     }
+    printf("Confirmation de l'envoi du message de %s.\n", type);
+    return 0;
+}
 
+
+void sigIntHandler(int sig) {
+    (void) sig;
+
+    sendMonitoringMessage(0, "BYE");
+    pthread_mutex_lock(&varMutex);
+    pthread_cond_signal(&varCondition);
+    pthread_mutex_unlock(&varMutex);
     isRunning = 0;
 }
 
@@ -168,25 +173,13 @@ void* monitoringMain(void* _arg) {
     printf("Connexion au port 9988 de l'orchestrateur réussie.\n");
 
     /* 3. Envoyer un message de connexion à l'orchestrateur. */
-    struct monitoringMessage message;
-    message.sizeLeft = 0;
-    strcpy(message.type, "HELLO");
-    message.workerIndex = workerIndex;
-
-    if (sendMessage(monitoringSocket, (const char *) &message, sizeof(message)) == -1) {
-        printf("ERREUR : Le message de monitoring HELLO n'a pas pu être envoyé.\n");
+    if (sendMonitoringMessage(0, "HELLO") == -1) {
         return NULL;
     }
-    printf("Confirmation de l'envoi du message de HELLO.\n");
 
-    message.sizeLeft = MAX_QUEUE_SIZE - numTasksWaiting;
-    strcpy(message.type, "INFO");
-
-    if (sendMessage(monitoringSocket, (const char *) &message, sizeof(message)) == -1) {
-        printf("ERREUR : Le message de monitoring INFO n'a pas pu être envoyé.\n");
+    if (sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO") == -1) {
         return NULL;
     }
-    printf("Confirmation de l'envoi du message d'INFO, taille restante : %d.\n", message.sizeLeft);
 
     while (isRunning == 1) {
         fd_set socketReadSet;
@@ -196,18 +189,17 @@ void* monitoringMain(void* _arg) {
         timeout.tv_usec = 0;
 
         int selectReturn = 0;
-        while (selectReturn <= 0) {
+        while (selectReturn <= 0 && isRunning == 1) {
             FD_ZERO(&socketReadSet);
             FD_SET(receivingSocket, &socketReadSet);
             selectReturn = select(receivingSocket + 1, &socketReadSet, NULL, NULL, &timeout);
         }
-        selectReturn = 0;
 
         /* 4. Recevoir les headers et fichiers depuis le réseau. */
         struct messageHeader header;
         if (receiveMessage(receivingSocket, &header, sizeof(header)) == -1) {
             printf("ERREUR : Le header n'a pas pu être reçu.\n");
-            continue;
+            return NULL;
         }
         printf("Réception du header réussie.\n");
 
@@ -254,16 +246,7 @@ void* monitoringMain(void* _arg) {
         printf("Tâche d'ID %d insérée dans la file d'attente.\n", header.taskID);
 
         /* 6. Envoyer l'état de la file d'attente à chaque nouveau message reçu. */
-        struct monitoringMessage message;
-        message.sizeLeft = MAX_QUEUE_SIZE - numTasksWaiting;
-        strcpy(message.type, "INFO");
-        message.workerIndex = workerIndex;
-
-        if (sendMessage(monitoringSocket, (const char *) &message, sizeof(message)) == -1) {
-            printf("ERREUR : L'envoi du message de la taille de la file d'attente n'a pas fonctionné.\n");
-        } else {
-            printf("Envoi du message INFO réussi.\n");
-        }
+        sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO");
 
         free(fileToCompile);
         close(taskFd);
@@ -310,12 +293,6 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
 
-    if ((receivingSocket = accept(communicationSocket, NULL, NULL)) == -1) {
-        printf("ERREUR : La connexion à l'orchestrateur à échouée.\n");
-        exit(EXIT_FAILURE);
-    }
-    printf("Connexion à l'orchestrateur réussie.\n");
-
     /* 1. Créer un thread d'envoi de l'état de la carte. */
     pthread_t monitoringThread;
     if (pthread_create(&monitoringThread, NULL, monitoringMain, NULL) != 0) {
@@ -326,12 +303,24 @@ int main(void) {
         printf("Lancement du thread de monitoring.\n");
     }
 
+    if ((receivingSocket = accept(communicationSocket, NULL, NULL)) == -1) {
+        printf("ERREUR : La connexion à l'orchestrateur à échouée.\n");
+        exit(EXIT_FAILURE);
+    }
+    printf("Connexion à l'orchestrateur réussie.\n");
+
     /* On écoute constamment pour pouvoir traiter des demandes à la chaine. */
     while(isRunning == 1) {
         pthread_mutex_lock(&varMutex);
-        while (numTasksWaiting == 0) {
+        while (numTasksWaiting == 0 && isRunning == 1) {
             pthread_cond_wait(&varCondition, &varMutex);
         }
+
+        /* Sécurité pour sortir proprement lors d'un SIGINT. */
+        if (isRunning != 1) {
+            break;
+        }
+
         printf("Il y a actuellement %d tâches en attente, lancement des calculs.\n", numTasksWaiting);
 
         int currentTaskID = taskQueue[0].taskID;
@@ -469,6 +458,7 @@ int main(void) {
         remove(filePath);
         remove(outPath);
         numTasksWaiting--;
+        sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO");
         pthread_mutex_unlock(&varMutex);
     }
 

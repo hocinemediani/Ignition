@@ -119,8 +119,8 @@ void connectToOrchestrator(socket_t *clientSocket) {
  * @param argv La liste des arguments donnée par l'utilisateur
  */
 void verifyUserInput(int argc, char *argv[]) {
-    if (argc < 2) {
-        printf("ERREUR : Spéficiez un nom de fichier .cu à soumettre\n");
+    if (argc < 3) {
+        printf("ERREUR : Spéficiez un nom de fichier .cu à soumettre et une priorité pour le trafic.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -167,7 +167,7 @@ int main (int argc, char *argv[]) {
 
     struct messageHeader header;
     header.messageSize = fileSize;
-    header.priority = 1;
+    header.priority = atoi(argv[2]);
     header.taskID = 0;
 
     if (sendMessage(clientSocket, (const char *) &header, sizeof(header)) == -1) {

@@ -10,6 +10,7 @@
 #define PORT 8796
 #define MAX_NUM_CONNECTION 15
 #define MAX_CONCURRENT_TASKS 25
+#define MAX_QUEUE_SIZE 10
 
 /* Instructions préprocesseur pour différencier les architectures linux de windows qui ont des imports différents. */
 #ifdef _WIN32
@@ -73,7 +74,7 @@ int sendMessage(socket_t clientSocket, const char *messageToSend, int size);
 
 void setNonBlocking(socket_t clientSocket);
 
-void checkConnectedJetsons();
+void setBlocking(socket_t clientSocket);
 
 void initializeSocket(socket_t *orchestratorSocket);
 
