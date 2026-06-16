@@ -1,11 +1,4 @@
-a.exe
-a.out
-run.sh
 .vscode
 client.exe
-worker
-client
 worker.exe
-test.exe
-test
 orchestrator.exe
