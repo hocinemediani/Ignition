@@ -68,7 +68,7 @@ int sendMessage(int clientSocket, const char *messageToSend, int size) {
     int sentBytes = 0;
     int bytesToSend = size;
     while (sentBytes < size) {
-        int bytesSent = (send(clientSocket, messageToSend + sentBytes, bytesToSend, 0));
+        int bytesSent = (send(clientSocket, messageToSend + sentBytes, bytesToSend, MSG_NOSIGNAL));
         if (bytesSent == -1) {
             return -1;
         }
@@ -177,9 +177,11 @@ void* monitoringMain(void* _arg) {
         return NULL;
     }
 
+    pthread_mutex_lock(&varMutex);
     if (sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO") == -1) {
         return NULL;
     }
+    pthread_mutex_unlock(&varMutex);
 
     while (isRunning == 1) {
         fd_set socketReadSet;
@@ -216,7 +218,7 @@ void* monitoringMain(void* _arg) {
         int taskFd = open(filePath, O_CREAT | O_WRONLY | O_EXCL, 0666);
 
         if (taskFd == -1) {
-            printf("ERREUR : Le fichier n'a pas pu être créé ou existe déjà.\n");
+            printf("ERREUR : Le fichier n'a pas pu être créé ou existe déjà : %s.\n", filePath);
             continue;
         }
         printf("Ecriture du fichier .cu à l'emplacement : %s.\n", filePath);
@@ -247,11 +249,11 @@ void* monitoringMain(void* _arg) {
 
         /* 6. Envoyer l'état de la file d'attente à chaque nouveau message reçu. */
         sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO");
+        pthread_cond_signal(&varCondition);
+        pthread_mutex_unlock(&varMutex);
 
         free(fileToCompile);
         close(taskFd);
-        pthread_cond_signal(&varCondition);
-        pthread_mutex_unlock(&varMutex);
     }
 
     return NULL;
@@ -303,6 +305,7 @@ int main(void) {
         printf("Lancement du thread de monitoring.\n");
     }
 
+    /* Récupérer le socket pour la communication avec l'orchestrateur après l'envoi du HELLO. */
     if ((receivingSocket = accept(communicationSocket, NULL, NULL)) == -1) {
         printf("ERREUR : La connexion à l'orchestrateur à échouée.\n");
         exit(EXIT_FAILURE);
@@ -323,7 +326,14 @@ int main(void) {
 
         printf("Il y a actuellement %d tâches en attente, lancement des calculs.\n", numTasksWaiting);
 
-        int currentTaskID = taskQueue[0].taskID;
+        struct messageHeader currentTask = taskQueue[0];
+        int currentTaskID = currentTask.taskID;
+
+        for (int i = 0; i < MAX_QUEUE_SIZE - 1; i++) {
+            taskQueue[i] = taskQueue[i + 1];
+        }
+        numTasksWaiting--;
+        
         pthread_mutex_unlock(&varMutex);
 
         /* 8. Récupérer la première tâche dans la file d'attente. */
@@ -332,6 +342,7 @@ int main(void) {
         
         char outPath[8];
         sprintf(outPath, "%d.out", currentTaskID);
+        printf("Tâche actuelle ID : %d, correspondant au fichier %s\n", currentTaskID, filePath);
 
         /* 9. Compiler le fichier .cu. */
         pid_t pid;
@@ -448,18 +459,14 @@ int main(void) {
         /* Nettoyer, mettre à jour la file d'attente puis boucler à l'étape 8. */
         end_loop:
         pthread_mutex_lock(&varMutex);
-        for (int i = 0; i < MAX_QUEUE_SIZE - 1; i++) {
-            taskQueue[i] = taskQueue[i + 1];
-        }
+        sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO");
+        pthread_mutex_unlock(&varMutex);
 
         fclose(resultFile);
         free(fileToSend);
         remove(resultName);
         remove(filePath);
         remove(outPath);
-        numTasksWaiting--;
-        sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO");
-        pthread_mutex_unlock(&varMutex);
     }
 
     close(communicationSocket);

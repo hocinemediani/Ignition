@@ -511,14 +511,14 @@ void* workerListening(void* _arg) {
             FD_ZERO(&socketReadSet);
             FD_SET(arg->socket, &socketReadSet);
             selectReturn = select(arg->socket + 1, &socketReadSet, NULL, NULL, &timeout);
-            if (selectReturn == -1) goto end;
+            if (selectReturn == -1) break;
         }
 
         /* 8. Réceptionner les résultats. */
         struct messageHeader header;
         if (receiveMessage(arg->socket, &header, sizeof(header)) == -1) {
             printf("ERREUR : Le header n'a pas pu être reçu depuis la orin-nano-%d\n", arg->index);
-            goto end;
+            break;
         }
         printf("Réception d'un header depuis la orin-nano-%d.\n", arg->index);
 
@@ -545,7 +545,6 @@ void* workerListening(void* _arg) {
         CLOSE_SOCKET(routingTable[header.taskID]);
         routingTable[header.taskID] = 0;
         free(resultString);
-        end:
         printf("Réception terminée, coupure de la connexion au client depuis la orin-nano-%d\n", arg->index);
     }
 

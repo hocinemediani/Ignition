@@ -1,2 +1,3 @@
-gcc -Wall -Wextra client.c -l"ws2_32" -o client 
-gcc -Wall -Wextra orchestrator.c -l"ws2_32" -o orchestrator 
+gcc -Wall -Wextra client.c -l"ws2_32" -o client
+gcc -Wall -Wextra orchestrator.c -l"ws2_32" -o orchestrator
+client testMatrix.cu 2
