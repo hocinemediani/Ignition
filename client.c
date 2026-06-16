@@ -24,16 +24,16 @@ int sendMessage(socket_t clientSocket, const char *messageToSend, int size) {
 
 /** Méthode helper afin de lire un fichier situé à filePath dans la variable fileString.
  * @param fileSize La taille du fichier à lire
- * @param cudaFileFd Le descripteur de fichier pointant sur le fichier à lire
+ * @param fileToSendFd Le descripteur de fichier pointant sur le fichier à lire
  * @param fileString Le buffer à remplir du contenu du fichier lu
  * @param filePath Le chemin vers le fichier, utilisé en cas d'erreur
  */
-void readFromFile(int fileSize, int cudaFileFd, char *fileString, char *filePath) {
+void readFromFile(int fileSize, int fileToSendFd, char *fileString, char *filePath) {
     int readBytes = 0;
     int bytesToRead = fileSize;
     while (readBytes < fileSize) {
         int bytesRead = 0;
-        if ((bytesRead = read(cudaFileFd, fileString + readBytes, bytesToRead)) == -1) {
+        if ((bytesRead = read(fileToSendFd, fileString + readBytes, bytesToRead)) == -1) {
             printf("ERREUR : La lecture du fichier %s s'est mal déroulée.\n", filePath);
             exit(EXIT_FAILURE);
         }
@@ -49,18 +49,18 @@ void readFromFile(int fileSize, int cudaFileFd, char *fileString, char *filePath
 
 /** Méthode helper afin d'obtenir la taille et un descripteur de fichier vers le fichier situé à filePath.
  * @param filePath Le chemin auquel le fichier se trouve
- * @param cudaFileFd Le descripteur de fichier sur filePath
+ * @param fileToSendFd Le descripteur de fichier sur filePath
  * @return La taille du fichier situé à filePath
  */
-int getFileSize(char *filePath, int *cudaFileFd) {
-    if ((*cudaFileFd = open(filePath, O_RDONLY | O_BINARY)) == -1) {
+int getFileSize(char *filePath, int *fileToSendFd) {
+    if ((*fileToSendFd = open(filePath, O_RDONLY | O_BINARY)) == -1) {
         printf("ERREUR : Impossible d'ouvrir le fichier : %s", filePath);
         exit(EXIT_FAILURE);
     }
 
     int fileSize = 0;
     struct stat fileStats;
-    if (fstat(*cudaFileFd, &fileStats) == -1) {
+    if (fstat(*fileToSendFd, &fileStats) == -1) {
         printf("ERREUR : L'appel à fstat à échoué.\n");
         exit(EXIT_FAILURE);
     }
@@ -120,7 +120,7 @@ void connectToOrchestrator(socket_t *clientSocket) {
  */
 void verifyUserInput(int argc, char *argv[]) {
     if (argc < 3) {
-        printf("ERREUR : Spéficiez un nom de fichier .cu à soumettre et une priorité pour le trafic.\n");
+        printf("ERREUR : Spéficiez un nom de fichier .pgm à soumettre et une priorité pour le trafic.\n");
         exit(EXIT_FAILURE);
     }
 
@@ -130,8 +130,8 @@ void verifyUserInput(int argc, char *argv[]) {
     }
 
     char *lastDotPosition;
-    if (((lastDotPosition = strrchr(argv[1], '.')) == NULL) || (strcmp(lastDotPosition + 1, "cu") != 0)) {
-        printf("ERREUR : Veuillez spécifier un fichier conforme, du type .cu.\n");
+    if (((lastDotPosition = strrchr(argv[1], '.')) == NULL) || (strcmp(lastDotPosition + 1, "pgm") != 0)) {
+        printf("ERREUR : Veuillez spécifier un fichier conforme, du type .pgm.\n");
         exit(EXIT_FAILURE);
     }
 }
@@ -140,7 +140,7 @@ void verifyUserInput(int argc, char *argv[]) {
 /** Fonction principale du client, permettant de :
  * - Vérifier la bonne extension du fichier à soumettre.
  * - Créer un socket se connectant à l'orchestrateur.
- * - Soumettre à l'orchestrateur le fichier .cu pour traitement par les workers.
+ * - Soumettre à l'orchestrateur le fichier .pgm pour traitement par les workers.
  * - Récupérer les résultats depuis l'orchestrateur et les afficher à la console.
  */
 int main (int argc, char *argv[]) {
@@ -157,13 +157,13 @@ int main (int argc, char *argv[]) {
     connectToOrchestrator(&clientSocket);
 
     /* 2. Envoi du fichier.c à l'orchestrateur (envoi de données pour plus tard). */
-    int cudaFileFd;
-    int fileSize = getFileSize(filePath, &cudaFileFd);
+    int fileToSendFd;
+    int fileSize = getFileSize(filePath, &fileToSendFd);
 
     char *fileString = malloc((fileSize + 1) * sizeof(char));
     memset(fileString, 0, (fileSize + 1) * sizeof(char));
     
-    readFromFile(fileSize, cudaFileFd, fileString, filePath);
+    readFromFile(fileSize, fileToSendFd, fileString, filePath);
 
     struct messageHeader header;
     header.messageSize = fileSize;
@@ -176,7 +176,7 @@ int main (int argc, char *argv[]) {
     }
     
     if (sendMessage(clientSocket, fileString, fileSize) == -1) {
-        printf("ERREUR : L'envoi du fichier .cu n'a pas pu aboutir.\n");
+        printf("ERREUR : L'envoi du fichier .pgm n'a pas pu aboutir.\n");
         goto cleanup;
     }
 
@@ -188,16 +188,17 @@ int main (int argc, char *argv[]) {
         goto cleanup;
     }
 
-    char *results = malloc(header.messageSize * sizeof(char));
+    char *results = malloc(header.messageSize * sizeof(char) + 1);
     if (receiveMessage(clientSocket, results, header.messageSize * sizeof(char)) == -1) {
         printf("ERREUR : La réception des résultats s'est mal déroulée.\n");
         goto cleanup;
     }
+    results[header.messageSize * sizeof(char)] = '\0';
 
     printf("Résultats reçus : \n%s", results);
 
     cleanup:
-    close(cudaFileFd);
+    close(fileToSendFd);
     free(fileString);
     return 0;
 }

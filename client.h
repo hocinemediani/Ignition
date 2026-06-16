@@ -58,5 +58,3 @@ int receiveMessage(int clientSocketFd, void *messageToReceive, int size);
 void connectToOrchestrator(socket_t *clientSocket);
 
 void verifyUserInput(int argc, char *argv[]);
-
-

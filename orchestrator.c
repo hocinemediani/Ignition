@@ -195,13 +195,13 @@ void* clientListening(void* _arg) {
     }
     printf("Réception du header du client %d.\n", arg->index);
 
-    /* 5. Récupérer le fichier .cu depuis le clientSocket. */
+    /* 5. Récupérer le fichier .pgm depuis le clientSocket. */
     char *fileString = malloc(header.messageSize * sizeof(char));
     if (receiveMessage(arg->socket, fileString, header.messageSize * sizeof(char)) == -1) {
-        printf("ERREUR : La réception du fichier .cu n'a pas aboutie.\n");
+        printf("ERREUR : La réception du fichier .pgm n'a pas aboutie.\n");
         return NULL;
     }
-    printf("Réception du fichier .cu du client %d.\n", arg->index);
+    printf("Réception du fichier .pgm du client %d.\n", arg->index);
 
     /* 6. Trouver la carte la moins utilisée par exploration de workerQueues. */
     int tries = 1;
@@ -484,7 +484,7 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
             continue;
         }
         if (FD_ISSET(socketTable[i], fdSet)) {
-            /* 4. Traiter les demandes lorsqu'elles arrivent (réception du header puis du fichier .cu). */
+            /* 4. Traiter les demandes lorsqu'elles arrivent (réception du header puis du fichier .pgm). */
             printf("Traitement de la connexion.\n");
             handler(socketTable[i], i);
         }

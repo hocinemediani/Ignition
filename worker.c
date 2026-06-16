@@ -37,7 +37,7 @@ volatile sig_atomic_t isRunning = 1;
 
 /* Socket pour l'envoi de message de monitoring. */
 int monitoringSocket;
-/* Socket pour la réception de fichier .cu et l'envoi de résultats. */
+/* Socket pour la réception de fichier .pgm et l'envoi de résultats. */
 int communicationSocket;
 /* Socket pour les envois. */
 int receivingSocket;
@@ -207,21 +207,21 @@ void* monitoringMain(void* _arg) {
 
         char *fileToCompile = malloc(header.messageSize * sizeof(char));
         if (receiveMessage(receivingSocket, fileToCompile, header.messageSize * sizeof(char)) == -1) {
-            printf("ERREUR : Le fichier .cu n'a pas pu être reçu.\n");
+            printf("ERREUR : Le fichier .pgm n'a pas pu être reçu.\n");
             continue;
         }
-        printf("Réception du fichier .cu réussie.\n");
+        printf("Réception du fichier .pgm réussie.\n");
 
         /* 5. Ecrire le fichier dans la mémoire de la jetson. */
         char filePath[8];
-        sprintf(filePath, "%d.cu", header.taskID);
+        sprintf(filePath, "%d.pgm", header.taskID);
         int taskFd = open(filePath, O_CREAT | O_WRONLY | O_EXCL, 0666);
 
         if (taskFd == -1) {
             printf("ERREUR : Le fichier n'a pas pu être créé ou existe déjà : %s.\n", filePath);
             continue;
         }
-        printf("Ecriture du fichier .cu à l'emplacement : %s.\n", filePath);
+        printf("Ecriture du fichier .pgm à l'emplacement : %s.\n", filePath);
 
         int writtenBytes = 0;
         int bytesToWrite = header.messageSize * sizeof(char);
@@ -237,7 +237,7 @@ void* monitoringMain(void* _arg) {
             writtenBytes += bytesWritten;
             bytesToWrite -= bytesWritten;
         }
-        printf("Ecriture du fichier .cu %s terminée.\n", filePath);
+        printf("Ecriture du fichier .pgm %s terminée.\n", filePath);
 
         /* 7. Les placer dans la file d'attente puis trier la file d'attente. */
         pthread_mutex_lock(&varMutex);
@@ -333,59 +333,19 @@ int main(void) {
             taskQueue[i] = taskQueue[i + 1];
         }
         numTasksWaiting--;
+        sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO");
         
         pthread_mutex_unlock(&varMutex);
 
         /* 8. Récupérer la première tâche dans la file d'attente. */
         char filePath[8];
-        sprintf(filePath, "%d.cu", currentTaskID);
+        sprintf(filePath, "%d.pgm", currentTaskID);
         
-        char outPath[8];
-        sprintf(outPath, "%d.out", currentTaskID);
-        printf("Tâche actuelle ID : %d, correspondant au fichier %s\n", currentTaskID, filePath);
-
-        /* 9. Compiler le fichier .cu. */
         pid_t pid;
 
-        if ((pid = fork()) == -1) {
-            printf("ERREUR : Le fork n'a pas fonctionné.\n");
-            continue;
-        }
-
-        if (pid == 0) {
-            /* Dans le fils, on compile le fichier .cu avec nvcc. */
-            char *argList[5];
-            argList[0] = "nvcc";
-            argList[1] = filePath;
-            argList[2] = "-o";
-            argList[3] = outPath;
-            argList[4] = NULL;
-
-            printf("Dans le processus de compilation, lancement de nvcc.\n");
-            execvp("nvcc", argList);
-
-            printf("ERREUR : La compilation nvcc à échouée.\n");
-            exit(EXIT_FAILURE);
-        } else {
-            /* Dans le père, on attends la fin de l'exécution du fils. */
-            int status;
-            waitpid(pid, &status, 0);
-
-            if (!WIFEXITED(status)) {
-                printf("ERREUR.\n");
-                continue;
-            }
-
-            if (WEXITSTATUS(status) != 0) {
-                printf("ERREUR : nvcc n'a pas pu compiler le fichier.\n");
-                continue;
-            }
-            printf("Compilation terminée avec succès.\n");
-        }
-
         /* 10. L'exécuter et pipe sa sortie dans un fichier résultat. */
-        char command[16];
-        sprintf(command, "./%s", outPath);
+        char command[128];
+        sprintf(command, "/usr/src/tensorrt/bin/sample_onnx_mnist");
         
         char resultName[8];
         sprintf(resultName, "%d.txt", currentTaskID);
@@ -408,9 +368,10 @@ int main(void) {
             dup2(resultFd, STDOUT_FILENO);
             close(resultFd);
 
-            char *argList[2];
+            char *argList[3];
             argList[0] = command;
-            argList[1] = NULL;
+            argList[1] = filePath;
+            argList[2] = NULL;
 
             execvp(command, argList);
             exit(EXIT_FAILURE);
@@ -425,8 +386,7 @@ int main(void) {
             }
 
             if (WEXITSTATUS(status) != 0) {
-                printf("ERREUR : nvcc n'a pas pu compiler le fichier.\n");
-                continue;
+                printf("ERREUR : Le lancement s'est mal déroulé.\n");
             }
             printf("Exécutable terminé avec succès.\n");
         }
@@ -458,15 +418,10 @@ int main(void) {
 
         /* Nettoyer, mettre à jour la file d'attente puis boucler à l'étape 8. */
         end_loop:
-        pthread_mutex_lock(&varMutex);
-        sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO");
-        pthread_mutex_unlock(&varMutex);
-
         fclose(resultFile);
         free(fileToSend);
         remove(resultName);
         remove(filePath);
-        remove(outPath);
     }
 
     close(communicationSocket);
