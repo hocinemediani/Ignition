@@ -1,3 +1,8 @@
+/* j'ai changé ce fichier d'inférence pour générer des logs minimes (uniquement la représentation ASCII et le
+vecteur de résultat) et j'ai également changé son comportement pour pouvoir spécifier le fichier .pgm à classifier,
+et chercher le .onnx au bon endroit. le build du .engine est également effectué une seule fois afin de minimiser le
+temps d'exécution. */
+
 /*
  * SPDX-FileCopyrightText: Copyright (c) 1993-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
@@ -37,6 +42,7 @@
 #include "NvInfer.h"
 #include <cuda_runtime_api.h>
 
+#include <stdio.h>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -47,6 +53,7 @@ using samplesCommon::SampleUniquePtr;
 const std::string gSampleName = "TensorRT.sample_onnx_mnist";
 char *pgmFilePath;
 bool hasInputFile = false;
+bool needsRebuild = false;
 
 //! \brief  The SampleOnnxMNIST class implements the ONNX MNIST sample
 //!
@@ -301,13 +308,11 @@ bool SampleOnnxMNIST::processInput(const samplesCommon::BufferManager& buffers)
     }
     
     // Print an ascii representation
-    sample::gLogInfo << "Input:" << std::endl;
+    printf("Input:\n");
     for (int i = 0; i < inputH * inputW; i++)
     {
-        if (i == 0) {sample::gLogInfo << ("\n"); }
-	sample::gLogInfo << (" .:-=+*#%@"[fileData[i] / 26]) << (((i + 1) % inputW) ? "" : "\n");
+	    printf("%c%s", " .:-=+*#%@"[fileData[i] / 26], (((i + 1) % inputW) ? "" : "\n"));
     }
-    sample::gLogInfo << std::endl;
 
     float* hostDataBuffer = static_cast<float*>(buffers.getHostBuffer(mParams.inputTensorNames[0]));
     for (int i = 0; i < inputH * inputW; i++)
@@ -328,7 +333,6 @@ bool SampleOnnxMNIST::verifyOutput(const samplesCommon::BufferManager& buffers)
     const int outputSize = mOutputDims.d[1];
     float* output = static_cast<float*>(buffers.getHostBuffer(mParams.outputTensorNames[0]));
     float val{0.0F};
-    int idx{0};
 
     // Calculate Softmax
     float sum{0.0F};
@@ -338,22 +342,14 @@ bool SampleOnnxMNIST::verifyOutput(const samplesCommon::BufferManager& buffers)
         sum += output[i];
     }
 
-    sample::gLogInfo << "Output:" << std::endl;
+    printf("\nOutput:\n");
     for (int i = 0; i < outputSize; i++)
     {
         output[i] /= sum;
         val = std::max(val, output[i]);
-        if (val == output[i])
-        {
-            idx = i;
-        }
 
-        sample::gLogInfo << " Prob " << i << "  " << std::fixed << std::setw(5) << std::setprecision(4) << output[i]
-                         << " "
-                         << "Class " << i << ": " << std::string(int(std::floor(output[i] * 10 + 0.5F)), '*')
-                         << std::endl;
+        printf("Prob %d  %.4f  Class %d: %s\n", i, output[i], i, std::string(int(std::floor(output[i] * 10 + 0.5F)), '*').c_str());
     }
-    sample::gLogInfo << std::endl;
 
     return true;
 }
@@ -366,7 +362,7 @@ samplesCommon::OnnxSampleParams initializeSampleParams(const samplesCommon::Args
     samplesCommon::OnnxSampleParams params;
     if (args.dataDirs.empty()) // Use default directories if user hasn't provided directory paths
     {
-        params.dataDirs.push_back("./data/mnist");
+        params.dataDirs.push_back("../data");
     }
     else // Use the data directory provided by the user
     {
@@ -410,13 +406,21 @@ void printHelpInfo()
 int main(int argc, char** argv)
 {
     samplesCommon::Args args;
-    if (argc >= 2)
+    if (argc < 2 || argc > 3)
+    {
+        printf("ERREUR : Utilisation attendue : ./sample_onnx_mnist (--rebuild) nomDeFichier\n");
+        return EXIT_FAILURE;
+    }
+    if (argc == 2)
     {
         hasInputFile = true;
-    }
-    if (hasInputFile)
-    {
         pgmFilePath = argv[1];
+    }
+    if ((strcmp("--rebuild", argv[1]) == 0) && (argc == 3))
+    {
+        needsRebuild = true;
+        hasInputFile = true;
+        pgmFilePath = argv[2];
     }
     sample::gLogger.setReportableSeverity(nvinfer1::ILogger::Severity::kERROR);
     bool argsOK = samplesCommon::parseArgs(args, argc, argv);
@@ -433,7 +437,7 @@ int main(int argc, char** argv)
 
     SampleOnnxMNIST sample(initializeSampleParams(args));
 
-    if (!sample.build())
+    if ((needsRebuild || access("./data/mnist.engine", F_OK) == -1) && !sample.build())
     {
         return EXIT_FAILURE;
     }

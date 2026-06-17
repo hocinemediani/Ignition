@@ -195,7 +195,7 @@ int main (int argc, char *argv[]) {
     }
     results[header.messageSize * sizeof(char)] = '\0';
 
-    printf("Résultats reçus : \n%s", results);
+    printf("Résultats reçus :\n\n%s", results);
 
     cleanup:
     close(fileToSendFd);
