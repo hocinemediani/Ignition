@@ -22,6 +22,7 @@ typedef struct messageHeader {
     int messageSize;
     int priority;
     int taskID;
+    char command[128];
 } messageHeader;
 
 /* Structure à envoyer sur le port 9988 pour informer d'un changement d'état de connexion ou de file d'attente. */
@@ -344,8 +345,8 @@ int main(void) {
         pid_t pid;
 
         /* 10. L'exécuter et pipe sa sortie dans un fichier résultat. */
-        char command[128];
-        sprintf(command, "/usr/src/tensorrt/bin/sample_onnx_mnist");
+        char command[256];
+        sprintf(command, "/usr/src/tensorrt/bin/%s", currentTask.command);
         
         char resultName[8];
         sprintf(resultName, "%d.txt", currentTaskID);
@@ -404,6 +405,7 @@ int main(void) {
         header.messageSize = fileSize;
         header.priority = taskQueue[0].priority;
         header.taskID = currentTaskID;
+        memset(header.command, 0, sizeof(header.command));
 
         if (sendMessage(receivingSocket, (const char *) &header, sizeof(header)) == -1) {
             printf("ERREUR : L'envoi du header au client à échoué.\n");

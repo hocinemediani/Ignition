@@ -119,13 +119,23 @@ void connectToOrchestrator(socket_t *clientSocket) {
  * @param argv La liste des arguments donnée par l'utilisateur
  */
 void verifyUserInput(int argc, char *argv[]) {
-    if (argc < 3) {
-        printf("ERREUR : Spéficiez un nom de fichier .pgm à soumettre et une priorité pour le trafic.\n");
+    if (argc < 4) {
+        printf("ERREUR : Spéficiez un nom de fichier à soumettre, le modèle voulu et une priorité pour le trafic.\n");
         exit(EXIT_FAILURE);
     }
 
     if (strlen(argv[1]) > MAX_FILEPATH_LENGTH) {
         printf("ERREUR : Le nom de fichier donné est trop long.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (strlen(argv[2]) > MAX_FILEPATH_LENGTH) {
+        printf("ERREUR : Le nom de modèle donné est trop long.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (strcmp(argv[2], "sample_onnx_mnist") != 0) {
+        printf("ERREUR : Voici choisir parmis les modèles suivants :\n\t-sample_onnx_mnist\n");
         exit(EXIT_FAILURE);
     }
 
@@ -167,8 +177,9 @@ int main (int argc, char *argv[]) {
 
     struct messageHeader header;
     header.messageSize = fileSize;
-    header.priority = atoi(argv[2]);
+    header.priority = atoi(argv[3]);
     header.taskID = 0;
+    sprintf(header.command, "%s", argv[2]);
 
     if (sendMessage(clientSocket, (const char *) &header, sizeof(header)) == -1) {
         printf("ERREUR : L'envoi du header s'est mal déroulé.\n");
