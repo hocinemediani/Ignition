@@ -62,7 +62,7 @@ typedef struct messageHeader {
     int messageSize;
     int priority;
     int taskID;
-    char command[128];
+    char command[1024];
 } messageHeader;
 
 void sigIntHandler(int sig);

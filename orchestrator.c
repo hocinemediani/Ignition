@@ -6,6 +6,9 @@ int numConnectedCards = 0;
 /* Index de la dernière carte connectée. */
 int lastCardIndex = 0;
 
+char availableModels[1000] = "sample_onnx_mnist (.pgm files)\n";
+char *validModelNames[] = {"sample_onnx_mnist"};
+
 /* Indique si l'orchestrateur doit continuer à fonctionner ou non. */
 volatile sig_atomic_t isRunning = 1;
 
@@ -191,14 +194,41 @@ void* clientListening(void* _arg) {
     struct messageHeader header;
     if (receiveMessage(arg->socket, &header, sizeof(header)) == -1) {
         printf("ERREUR : La réception du header du client %d s'est mal passée.\n", arg->index);
+        CLOSE_SOCKET(arg->socket);
         return NULL;
     }
     printf("Réception du header du client %d.\n", arg->index);
+
+    int validModel = 0;
+    for (int i = 0; i < (int) (sizeof(validModelNames) / sizeof(validModelNames[1])); i++) {
+        if (strcmp(validModelNames[i], header.command) == 0) {
+            validModel = 1;
+            break;
+        }
+    }
+
+    if (validModel == 0) {
+        header.messageSize = 0;
+        header.priority = 9999;
+        header.taskID = 0;
+        sprintf(header.command, "%s", availableModels);
+
+        if (sendMessage(arg->socket, (const char *) &header, sizeof(header)) == -1) {
+            printf("ERREUR : Le header d'information sur les modèles n'a pas pu être envoyé au client.\n");
+            goto end_socket;
+        }
+
+        printf("Le header d'information sur les modèles à été envoyé au client avec succès.\n");
+        end_socket:
+        CLOSE_SOCKET(arg->socket);
+        return NULL;
+    }
 
     /* 5. Récupérer le fichier .pgm depuis le clientSocket. */
     char *fileString = malloc(header.messageSize * sizeof(char));
     if (receiveMessage(arg->socket, fileString, header.messageSize * sizeof(char)) == -1) {
         printf("ERREUR : La réception du fichier .pgm n'a pas aboutie.\n");
+        CLOSE_SOCKET(arg->socket);
         return NULL;
     }
     printf("Réception du fichier .pgm du client %d.\n", arg->index);

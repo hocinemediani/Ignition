@@ -1,6 +1,5 @@
 #include "client.h"
 
-
 /** Méthode helper afin d'envoyer un bloc d'information à la carte worker.
  * @param clientSocket Le socket depuis lequel envoyer les informations
  * @param messageToSend Le message à envoyer
@@ -134,11 +133,6 @@ void verifyUserInput(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    if (strcmp(argv[2], "sample_onnx_mnist") != 0) {
-        printf("ERREUR : Voici choisir parmis les modèles suivants :\n\t-sample_onnx_mnist\n");
-        exit(EXIT_FAILURE);
-    }
-
     char *lastDotPosition;
     if (((lastDotPosition = strrchr(argv[1], '.')) == NULL) || (strcmp(lastDotPosition + 1, "pgm") != 0)) {
         printf("ERREUR : Veuillez spécifier un fichier conforme, du type .pgm.\n");
@@ -196,6 +190,25 @@ int main (int argc, char *argv[]) {
 
     if (receiveMessage(clientSocket, &header, sizeof(header)) == -1) {
         printf("ERREUR : La réception du header s'est mal déroulée.\n");
+        goto cleanup;
+    }
+
+    if (header.priority == 9999) {
+        char availableModels[1030];
+        sprintf(availableModels, "%s", header.command);
+        
+        printf("ERREUR : Veuillez choisir parmis les modèles suivants :\n");
+        
+        int i = 0;
+        while (i < (int) strlen(availableModels)) {
+            printf("\t- ");
+            while (availableModels[i] != '\n' && availableModels[i] != '\0') {
+                printf("%c", availableModels[i]);
+                i++;
+            }
+            printf("\n");
+            i++;
+        }
         goto cleanup;
     }
 

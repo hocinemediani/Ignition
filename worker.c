@@ -22,7 +22,7 @@ typedef struct messageHeader {
     int messageSize;
     int priority;
     int taskID;
-    char command[128];
+    char command[1024];
 } messageHeader;
 
 /* Structure à envoyer sur le port 9988 pour informer d'un changement d'état de connexion ou de file d'attente. */
@@ -345,7 +345,7 @@ int main(void) {
         pid_t pid;
 
         /* 10. L'exécuter et pipe sa sortie dans un fichier résultat. */
-        char command[256];
+        char command[2048];
         sprintf(command, "/usr/src/tensorrt/bin/%s", currentTask.command);
         
         char resultName[8];
@@ -361,7 +361,7 @@ int main(void) {
             int resultFd = open(resultName, O_CREAT | O_WRONLY | O_TRUNC, 0666);
             if (resultFd == -1) {
                 printf("ERREUR : Le fichier de résultat n'a pas pu être ouvert.\n");
-                exit(EXIT_FAILURE);
+                continue;
             }
             printf("Création du fichier de résultat réussie.\n");
             printf("Lancement de l'exécutable.\n");
@@ -388,6 +388,7 @@ int main(void) {
 
             if (WEXITSTATUS(status) != 0) {
                 printf("ERREUR : Le lancement s'est mal déroulé.\n");
+                continue;
             }
             printf("Exécutable terminé avec succès.\n");
         }
