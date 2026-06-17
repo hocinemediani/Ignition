@@ -43,6 +43,7 @@ temps d'exécution. */
 #include <cuda_runtime_api.h>
 
 #include <stdio.h>
+#include <unistd.h>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
@@ -73,6 +74,8 @@ public:
     //! \brief Function builds the network engine
     //!
     bool build();
+
+    bool loadEngine();
 
     //!
     //! \brief Runs the TensorRT inference engine for this sample
@@ -164,6 +167,14 @@ bool SampleOnnxMNIST::build()
         return false;
     }
 
+    std::ofstream engineFile("/usr/src/tensorrt/data/mnist/mnist.engine", std::ios::binary);
+    if (!engineFile)
+    {
+        return false;
+    }
+    engineFile.write(static_cast<const char*>(plan->data()), plan->size());
+    engineFile.close();
+
     if (timingCache != nullptr && !mParams.timingCacheFile.empty())
     {
         samplesCommon::updateTimingCacheFile(
@@ -190,6 +201,41 @@ bool SampleOnnxMNIST::build()
     ASSERT(network->getNbOutputs() == 1);
     mOutputDims = network->getOutput(0)->getDimensions();
     ASSERT(mOutputDims.nbDims == 2);
+
+    return true;
+}
+
+bool SampleOnnxMNIST::loadEngine()
+{
+    std::ifstream engineFile("/usr/src/tensorrt/data/mnist/mnist.engine", std::ios::binary);
+    if (!engineFile)
+    {
+        return false;
+    }
+
+    engineFile.seekg(0, engineFile.end);
+    long int fsize = engineFile.tellg();
+    engineFile.seekg(0, engineFile.beg);
+
+    std::vector<char> engineData(fsize);
+    engineFile.read(engineData.data(), fsize);
+    engineFile.close();
+
+    mRuntime = std::shared_ptr<nvinfer1::IRuntime>(createInferRuntime(sample::gLogger.getTRTLogger()));
+    if (!mRuntime)
+    {
+        return false;
+    }
+
+    mEngine = std::shared_ptr<nvinfer1::ICudaEngine>(
+        mRuntime->deserializeCudaEngine(engineData.data(), fsize), samplesCommon::InferDeleter());
+    if (!mEngine)
+    {
+        return false;
+    }
+
+    mInputDims = mEngine->getTensorShape(mParams.inputTensorNames[0].c_str());
+    mOutputDims = mEngine->getTensorShape(mParams.outputTensorNames[0].c_str());
 
     return true;
 }
@@ -362,7 +408,7 @@ samplesCommon::OnnxSampleParams initializeSampleParams(const samplesCommon::Args
     samplesCommon::OnnxSampleParams params;
     if (args.dataDirs.empty()) // Use default directories if user hasn't provided directory paths
     {
-        params.dataDirs.push_back("../data");
+        params.dataDirs.push_back("/usr/src/tensorrt/data/mnist");
     }
     else // Use the data directory provided by the user
     {
@@ -437,9 +483,22 @@ int main(int argc, char** argv)
 
     SampleOnnxMNIST sample(initializeSampleParams(args));
 
-    if ((needsRebuild || access("./data/mnist.engine", F_OK) == -1) && !sample.build())
+    bool engineExists = (access("/usr/src/tensorrt/data/mnist/mnist.engine", F_OK) != -1);
+
+    if (needsRebuild || !engineExists)
     {
-        return EXIT_FAILURE;
+        if (!sample.build())
+        {
+            return EXIT_FAILURE;
+        }
+    }
+    else
+    {
+        if (!sample.loadEngine())
+        {
+            printf("Erreur lors du chargement du cache. Relancez avec --rebuild.\n");
+            return EXIT_FAILURE;
+        }
     }
     if (!sample.infer())
     {
