@@ -6,8 +6,10 @@ int numConnectedCards = 0;
 /* Index de la dernière carte connectée. */
 int lastCardIndex = 0;
 
-char availableModels[1000] = "mnist\n";
-char *validModelNames[] = {"mnist"};
+/* Plus haut nombre de modèles connus. */
+int numModels = 0;
+/* Liste des noms de modèles existants. */
+char *validModelNames[100];
 
 /* Indique si l'orchestrateur doit continuer à fonctionner ou non. */
 volatile sig_atomic_t isRunning = 1;
@@ -199,12 +201,18 @@ void* clientListening(void* _arg) {
     }
     printf("Réception du header du client %d.\n", arg->index);
 
+    /* Utilisation de 2 strings (on envoie au maximum 2 fichiers). */
     char *fileString1;
+    char *fileString2;
+
+    int fileSize1;
+    int fileSize2;
+
     if (header.action == 0) {
         /* Si le client souhaite utiliser un modèle. */
         /* On vérifie que le modèle est bien un des modèles connus. */
         int validModel = 0;
-        for (int i = 0; i < (int) (sizeof(validModelNames) / sizeof(validModelNames[1])); i++) {
+        for (int i = 0; i < numModels; i++) {
             if (strcmp(validModelNames[i], header.model) == 0) {
                 validModel = 1;
                 break;
@@ -213,7 +221,19 @@ void* clientListening(void* _arg) {
 
         /* Si il ne l'est pas, on envoie à l'utilisateur la liste des modèles. */
         if (validModel == 0) {
-            header.messageSize = sizeof(availableModels);
+            /* Préparation du string à envoyer au client. */
+            int size = 1;
+            for (int i = 0; i < numModels; i++) {
+                size += strlen(validModelNames[i]) + 1;
+            }
+
+            char *messageToSend = malloc(size);
+            memset(messageToSend, 0, size);
+            for (int i = 0; i < numModels; i++) {
+                sprintf(messageToSend + strlen(messageToSend), "%s\n", validModelNames[i]);
+            }
+
+            header.messageSize = size;
             header.priority = 0;
             header.taskID = 0;
             header.action = 4;
@@ -224,10 +244,11 @@ void* clientListening(void* _arg) {
                 goto end_socket;
             }
 
-            if (sendMessage(arg->socket, availableModels, sizeof(availableModels)) == -1) {
+            if (sendMessage(arg->socket, messageToSend, size) == -1) {
                 printf("ERREUR : Le message d'information sur les modèles n'a pas pu être envoyé au client.\n");
                 goto end_socket;
             }
+            free(messageToSend);
             printf("Message d'information sur les modèles envoyé au client avec succès.\n");
 
             end_socket:
@@ -236,15 +257,41 @@ void* clientListening(void* _arg) {
         }
 
         /* 5. Récupérer le fichier à traiter depuis le clientSocket. */
-        fileString1 = malloc(header.messageSize * sizeof(char));
-        if (receiveMessage(arg->socket, fileString1, header.messageSize * sizeof(char)) == -1) {
+        fileString1 = malloc(header.messageSize);
+        if (receiveMessage(arg->socket, fileString1, header.messageSize) == -1) {
             printf("ERREUR : La réception du fichier à traiter n'a pas aboutie.\n");
             CLOSE_SOCKET(arg->socket);
             return NULL;
         }
         printf("Réception du fichier à traiter du client %d.\n", arg->index);
-    } else {
+    } else if (header.action == 1) {
         /* Si le client souhaite soumettre un nouveau modèle. */
+        /* Réceptionner le fichier .onnx. */
+        fileString1 = malloc(header.messageSize);
+        fileSize1 = header.messageSize;
+        if (receiveMessage(arg->socket, fileString1, header.messageSize) == -1) {
+            printf("ERREUR : La réception du fichier à traiter n'a pas aboutie.\n");
+            CLOSE_SOCKET(arg->socket);
+            return NULL;
+        }
+        printf("Réception du fichier .onnx réalisée avec succès.\n");
+
+        /* Réceptionner le second header. */
+        if (receiveMessage(arg->socket, &header, sizeof(header)) == -1) {
+            printf("ERREUR : La réception du header du client %d s'est mal passée.\n", arg->index);
+            CLOSE_SOCKET(arg->socket);
+            return NULL;
+        }
+
+        /* Réceptionner le fichier d'inférence. */
+        fileString2 = malloc(header.messageSize);
+        fileSize2 = header.messageSize;
+        if (receiveMessage(arg->socket, fileString2, header.messageSize) == -1) {
+            printf("ERREUR : La réception du fichier à traiter n'a pas aboutie.\n");
+            CLOSE_SOCKET(arg->socket);
+            return NULL;
+        }
+        printf("Réception du fichier .cpp réalisée avec succès.\n");
     }
 
     /* 6. Trouver la carte la moins utilisée par exploration de workerQueues. */
@@ -290,21 +337,53 @@ void* clientListening(void* _arg) {
     pthread_mutex_unlock(&idMutex);
 
     pthread_mutex_lock(&workerMutexes[minQueueIndex]);
-    if (sendMessage(workerSocketTable[minQueueIndex], (const char *) &header, sizeof(header)) == -1) {
-        printf("ERREUR : L'envoi du header à la orin-nano-%d à échoué.\n", minQueueIndex);
-        goto cleanup;
-    }
-    printf("Envoi du header réussi à la orin-nano-%d.\n", minQueueIndex);
 
     if (header.action == 0) {
-        /* Si on souhaite utiliser un modèle, on envoie uniquement le fichier à traiter. */
-        if (sendMessage(workerSocketTable[minQueueIndex], fileString1, header.messageSize * sizeof(char)) == -1) {
+        /* Si on souhaite utiliser un modèle. */
+        /* Envoi du header. */
+        if (sendMessage(workerSocketTable[minQueueIndex], (const char *) &header, sizeof(header)) == -1) {
+            printf("ERREUR : L'envoi du header à la orin-nano-%d à échoué.\n", minQueueIndex);
+            goto cleanup;
+        }
+        printf("Envoi du header réussi à la orin-nano-%d.\n", minQueueIndex);
+
+        /* Envoi du fichier. */
+        if (sendMessage(workerSocketTable[minQueueIndex], fileString1, header.messageSize) == -1) {
             printf("ERREUR : L'envoi de la tâche à la orin-nano-%d à échoué.\n", minQueueIndex);
             goto cleanup;
         }
         printf("Envoi de la tâche réussie à la orin-nano-%d.\n", minQueueIndex);
     } else {
-        /* Si on souhaite soumettre un moèdle, on envoie le .onnx et le .cpp. */
+        /* Si on souhaite soumettre un modèle. */
+        header.messageSize = fileSize1;
+
+        /* Envoi du premier header. */
+        if (sendMessage(workerSocketTable[minQueueIndex], (const char *) &header, sizeof(header)) == -1) {
+            printf("ERREUR : L'envoi du premier header à la orin-nano-%d à échoué.\n", minQueueIndex);
+            goto cleanup;
+        }
+        printf("Envoi du premier header réussi à la orin-nano-%d.\n", minQueueIndex);
+
+        /* Envoi du fichier .onnx. */
+        if (sendMessage(workerSocketTable[minQueueIndex], fileString1, fileSize1) == -1) {
+            printf("ERREUR : L'envoi du fichier .onnx à la orin-nano-%d à échoué.\n", minQueueIndex);
+            goto cleanup;
+        }
+
+        /* Envoi du second header. */
+        header.messageSize = fileSize2;
+        if (sendMessage(workerSocketTable[minQueueIndex], (const char *) &header, sizeof(header)) == -1) {
+            printf("ERREUR : L'envoi du second header à la orin-nano-%d à échoué.\n", minQueueIndex);
+            goto cleanup;
+        }
+        printf("Envoi du second header réussi à la orin-nano-%d.\n", minQueueIndex);
+
+        /* Envoi du fichier .cpp. */
+        if (sendMessage(workerSocketTable[minQueueIndex], fileString2, fileSize2) == -1) {
+            printf("ERREUR : L'envoi du fichier .cpp à la orin-nano-%d à échoué.\n", minQueueIndex);
+            goto cleanup;
+        }
+        printf("Envoi de la tâche réussie à la orin-nano-%d.\n", minQueueIndex);
     }
 
     cleanup:
@@ -577,14 +656,22 @@ void* workerListening(void* _arg) {
         }
         printf("Réception d'un header depuis la orin-nano-%d.\n", arg->index);
 
-        if (header.action == 2) {
+        if (header.action == 1) {
+            /* La soumission d'un nouveau modèle à fonctionnée. */
+            sendMessage(routingTable[header.taskID], (const char *) &header, sizeof(header));
+            printf("Le modèle %s à bien été enregistré par la orin-nano-%d\n", header.model, arg->index);
+            /* On ajoute le nouveau modèle à validModelNames. */
+            validModelNames[numModels++] = strdup(header.model);
+            goto end_task;
+        } else if (header.action == 2) {
+            /* Une erreur de compilation ou d'exécution s'est produite au niveau de la worker. */
             sendMessage(routingTable[header.taskID], (const char *) &header, sizeof(header));
             printf("ERREUR : La worker n'a pas pu compiler/exécuter la tâche.\n");
             goto end_task;
         }
 
-        char *resultString = malloc(header.messageSize * sizeof(char));
-        if (receiveMessage(arg->socket, resultString, header.messageSize * sizeof(char)) == -1) {
+        char *resultString = malloc(header.messageSize);
+        if (receiveMessage(arg->socket, resultString, header.messageSize) == -1) {
             printf("ERREUR : La réception du résultat depuis orin-nano-%d à échoué.\n", arg->index);
             free(resultString);
             goto end_task;
@@ -599,7 +686,7 @@ void* workerListening(void* _arg) {
         }
         printf("Envoi du header au client depuis la orin-nano-%d.\n", arg->index);
 
-        if (sendMessage(routingTable[header.taskID], resultString, header.messageSize * sizeof(char)) == -1) {
+        if (sendMessage(routingTable[header.taskID], resultString, header.messageSize) == -1) {
             printf("ERREUR : Le résultat n'a pas pu être envoyé au client.\n");
         }
         printf("Envoi du résultat au client depuis la orin-nano-%d.\n", arg->index);
@@ -621,6 +708,34 @@ int main(void) {
     /* Initialisation de la connexion windows. */
     init_connection();
     printf("Connexion initialisée.\n");
+
+    /* Récupération des noms de modèles existants. */
+    int savedModels = open("currentModels.txt", O_RDWR);
+
+    if (savedModels == -1) {
+        printf("ERREUR : Impossible d'ouvrir le fichier de sauvegarde des modèles.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    char readCharacter;
+    int readBytes;
+    char modelName[64];
+    int modelNameIndex = 0;
+    while ((readBytes = read(savedModels, &readCharacter, 1)) > 0) {
+        if (readCharacter == '\n') {
+            modelName[modelNameIndex] = '\0';
+            validModelNames[numModels++] = strdup(modelName);
+            modelNameIndex = 0;
+            memset(modelName, 0, sizeof(modelName));
+        } else {
+            if (modelNameIndex >= 63) {
+                printf("ERREUR : Le nom de modèle fourni est trop long.\n");
+                exit(EXIT_FAILURE);
+            }
+            modelName[modelNameIndex++] = readCharacter;
+        }
+    }
+    close(savedModels);
 
     /* Initialisation de la taille restante des queues des workers. */
     for (int i = 0; i < NUM_CARDS; i++) {
@@ -681,6 +796,18 @@ int main(void) {
         }
         CLOSE_SOCKET(workerSocketTable[i]);
     }
+
+    /* Sauvegarde des modèles existants dans un fichier .txt. */
+    FILE *saveFile = fopen("currentModels.txt", "w");
+    if (saveFile == NULL) {
+        printf("ERREUR : Impossible de créer le fichier de sauvegarde.\n");
+        return -1;
+    }
+
+    for (int i = 0; i < numModels; i++) {
+        fprintf(saveFile, "%s\n", validModelNames[i]);
+    }
+    fclose(saveFile);
     
     /* Fermeture de la connexion (windows) et libération de la mémoire allouée. */
     close_connection();

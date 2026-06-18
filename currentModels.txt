@@ -1,0 +1,4 @@
+mnist
+mnist-copy
+mnist-copy
+mnist-copy

@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <time.h>
+#include <glob.h>
 #include <sys/wait.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -44,7 +45,7 @@ volatile sig_atomic_t isRunning = 1;
 
 /* Socket pour l'envoi de message de monitoring. */
 int monitoringSocket;
-/* Socket pour la réception de fichier .pgm et l'envoi de résultats. */
+/* Socket pour la réception des données et l'envoi de résultats. */
 int communicationSocket;
 /* Socket pour les envois. */
 int receivingSocket;
@@ -157,6 +158,46 @@ int compareTasks(const void* _task1, const void* _task2) {
 }
 
 
+int getAndWriteFile(struct messageHeader header, char *prefix, char *fileName, char *suffix) {
+    char *fileToGet = malloc(header.messageSize);
+    if (receiveMessage(receivingSocket, fileToGet, header.messageSize) == -1) {
+        printf("ERREUR : Le fichier à traiter n'a pas pu être reçu.\n");
+        return -1;
+    }
+    printf("Réception du fichier à traiter réussie.\n");
+
+    /* 5. Ecrire le fichier dans la mémoire de la jetson. */
+    char filePath[128];
+    sprintf(filePath, "%s%s%s", prefix, fileName, suffix);
+    int taskFd = open(filePath, O_CREAT | O_WRONLY | O_EXCL, 0666);
+
+    if (taskFd == -1) {
+        printf("ERREUR : Le fichier n'a pas pu être créé ou existe déjà : %s.\n", filePath);
+        return -1;
+    }
+    printf("Ecriture du fichier à traiter à l'emplacement : %s.\n", filePath);
+
+    int writtenBytes = 0;
+    int bytesToWrite = header.messageSize;
+    while (writtenBytes < (int) (header.messageSize)) {
+        int bytesWritten = write(taskFd, fileToGet + writtenBytes, bytesToWrite);
+        if (bytesWritten == -1) {
+            printf("ERREUR : L'écriture du fichier %s s'est mal déroulée", filePath);
+            return -1;
+        }
+        if (bytesWritten == 0) {
+            break;
+        }
+        writtenBytes += bytesWritten;
+        bytesToWrite -= bytesWritten;
+    }
+    printf("Ecriture du fichier à traiter %s terminée.\n", filePath);
+    free(fileToGet);
+    close(taskFd);
+    return 0;
+}
+
+
 void* monitoringMain(void* _arg) {
     (void) _arg;
     /* 2. Créer un socket vers le port 9988 de l'orchestrateur */
@@ -210,46 +251,37 @@ void* monitoringMain(void* _arg) {
             printf("ERREUR : Le header n'a pas pu être reçu.\n");
             return NULL;
         }
-        printf("Réception du header réussie.\n");
+        printf("Réception du header réussie..\n");
 
-        if (header.action == 5) {
+        if (header.action == 0) {
+            char fileName[4];
+            sprintf(fileName, "%c", header.taskID + '0');
+            getAndWriteFile(header, "", fileName, "");
+        } else if (header.action == 1) {
+            /* Sauvegarder un nouveau modèle. */
+            /* On récupère le fichier .onnx. */
+            if (getAndWriteFile(header, "./data/", header.model, ".onnx") == -1) {
+                header.action = 2;
+                sendMessage(receivingSocket, (const char *) &header, sizeof(header));
+            }
+
+            /* On récupère le second header. */
+            if (receiveMessage(receivingSocket, &header, sizeof(header)) == -1) {
+                printf("ERREUR : Le second header n'a pas pu être reçu.\n");
+                return NULL;
+            }
+            printf("Réception du second header réussie.\n");
+
+            /* On récupère le fichier .cpp. */
+            if (getAndWriteFile(header, "./inferenceFiles/", header.model, ".cpp") == -1) {
+                header.action = 2;
+                sendMessage(receivingSocket, (const char *) &header, sizeof(header));
+            }
+        } else if (header.action == 5) {
+            /* Si l'orchestrateur s'est éteint. */
             printf("Fermeture de l'orchestrateur enregistrée, terminaison du programme.\n");
             exit(EXIT_SUCCESS);
         }
-
-        char *fileToCompile = malloc(header.messageSize * sizeof(char));
-        if (receiveMessage(receivingSocket, fileToCompile, header.messageSize * sizeof(char)) == -1) {
-            printf("ERREUR : Le fichier .pgm n'a pas pu être reçu.\n");
-            continue;
-        }
-        printf("Réception du fichier .pgm réussie.\n");
-
-        /* 5. Ecrire le fichier dans la mémoire de la jetson. */
-        char filePath[8];
-        sprintf(filePath, "%d.pgm", header.taskID);
-        int taskFd = open(filePath, O_CREAT | O_WRONLY | O_EXCL, 0666);
-
-        if (taskFd == -1) {
-            printf("ERREUR : Le fichier n'a pas pu être créé ou existe déjà : %s.\n", filePath);
-            continue;
-        }
-        printf("Ecriture du fichier .pgm à l'emplacement : %s.\n", filePath);
-
-        int writtenBytes = 0;
-        int bytesToWrite = header.messageSize * sizeof(char);
-        while (writtenBytes < (int) (header.messageSize * sizeof(char))) {
-            int bytesWritten = write(taskFd, fileToCompile + writtenBytes, bytesToWrite);
-            if (bytesWritten == -1) {
-                printf("ERREUR : L'écriture du fichier %s s'est mal déroulée", filePath);
-                break;
-            }
-            if (bytesWritten == 0) {
-                break;
-            }
-            writtenBytes += bytesWritten;
-            bytesToWrite -= bytesWritten;
-        }
-        printf("Ecriture du fichier .pgm %s terminée.\n", filePath);
 
         /* 7. Les placer dans la file d'attente puis trier la file d'attente. */
         pthread_mutex_lock(&varMutex);
@@ -263,9 +295,6 @@ void* monitoringMain(void* _arg) {
         sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO");
         pthread_cond_signal(&varCondition);
         pthread_mutex_unlock(&varMutex);
-
-        free(fileToCompile);
-        close(taskFd);
     }
 
     close(monitoringSocket);
@@ -345,6 +374,7 @@ int main(void) {
 
         printf("Il y a actuellement %d tâches en attente, lancement des calculs.\n", numTasksWaiting);
 
+        /* 8. Récupérer la première tâche dans la file d'attente. */
         struct messageHeader currentTask = taskQueue[0];
         int currentTaskID = currentTask.taskID;
 
@@ -355,99 +385,206 @@ int main(void) {
         sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO");
         
         pthread_mutex_unlock(&varMutex);
-
-        /* 8. Récupérer la première tâche dans la file d'attente. */
-        char filePath[8];
-        sprintf(filePath, "%d.pgm", currentTaskID);
         
-        pid_t pid;
+        char resultName[32];
+        char filePath[32];
+        if (currentTask.action == 0) {
+            sprintf(filePath, "%d", currentTaskID);
+            
+            pid_t pid;
 
-        /* 10. L'exécuter et pipe sa sortie dans un fichier résultat. */
-        char command[2048];
-        sprintf(command, "./models/%s", currentTask.model);
-        
-        char resultName[8];
-        sprintf(resultName, "%d.txt", currentTaskID);
+            /* 10. L'exécuter et pipe sa sortie dans un fichier résultat. */
+            char command[2048];
+            sprintf(command, "./models/%s", currentTask.model);
+            sprintf(resultName, "%d.txt", currentTaskID);
 
-        if ((pid = fork()) == -1) {
-            printf("ERREUR : Le fork n'a pas fonctionné.\n");
-            continue;
-        }
-
-        if (pid == 0) {
-            /* Dans le fils, on exécute le .out et on branche la sortie standard sur le fichier de résultats. */
-            int resultFd = open(resultName, O_CREAT | O_WRONLY | O_TRUNC, 0666);
-            if (resultFd == -1) {
-                printf("ERREUR : Le fichier de résultat n'a pas pu être ouvert.\n");
-                continue;
-            }
-            printf("Création du fichier de résultat réussie.\n");
-            printf("Lancement de l'exécutable.\n");
-
-            dup2(resultFd, STDOUT_FILENO);
-            close(resultFd);
-
-            char *argList[3];
-            argList[0] = command;
-            argList[1] = filePath;
-            argList[2] = NULL;
-
-            execvp(command, argList);
-            exit(EXIT_FAILURE);
-        } else {
-            /* Dans le père, on attends la fin de l'exécution du fils. */
-            int status;
-            waitpid(pid, &status, 0);
-
-            if (!WIFEXITED(status)) {
-                printf("ERREUR.\n");
+            if ((pid = fork()) == -1) {
+                printf("ERREUR : Le fork n'a pas fonctionné.\n");
                 continue;
             }
 
-            if (WEXITSTATUS(status) != 0) {
-                printf("ERREUR : Le lancement s'est mal déroulé.\n");
-                struct messageHeader header;
-                memset(&header, 0, sizeof(header));
-                header.action = 2;
-                header.taskID = currentTaskID;
-                sendMessage(receivingSocket, (const char *) &header, sizeof(header));
+            if (pid == 0) {
+                /* Dans le fils, on exécute le bon modèle et on branche la sortie standard sur le fichier de résultats. */
+                int resultFd = open(resultName, O_CREAT | O_WRONLY | O_TRUNC, 0666);
+                if (resultFd == -1) {
+                    printf("ERREUR : Le fichier de résultat n'a pas pu être ouvert.\n");
+                    continue;
+                }
+                printf("Création du fichier de résultat réussie.\n");
+                printf("Lancement de l'exécutable.\n");
+
+                dup2(resultFd, STDOUT_FILENO);
+                close(resultFd);
+
+                char *argList[3];
+                argList[0] = command;
+                argList[1] = filePath;
+                argList[2] = NULL;
+
+                execvp(command, argList);
+                exit(EXIT_FAILURE);
+            } else {
+                /* Dans le père, on attends la fin de l'exécution du fils. */
+                int status;
+                waitpid(pid, &status, 0);
+
+                if (!WIFEXITED(status)) {
+                    printf("ERREUR.\n");
+                    struct messageHeader header;
+                    memset(&header, 0, sizeof(header));
+                    header.action = 2;
+                    header.taskID = currentTaskID;
+                    sendMessage(receivingSocket, (const char *) &header, sizeof(header));
+                    remove(resultName);
+                    continue;
+                }
+
+                if (WEXITSTATUS(status) != 0) {
+                    printf("ERREUR : Le lancement s'est mal déroulé.\n");
+                    struct messageHeader header;
+                    memset(&header, 0, sizeof(header));
+                    header.action = 2;
+                    header.taskID = currentTaskID;
+                    sendMessage(receivingSocket, (const char *) &header, sizeof(header));
+                    remove(resultName);
+                    continue;
+                }
+                printf("Exécutable terminé avec succès.\n");
+            }
+
+            /* 11. Envoyer les résultats sur le réseau. */
+            FILE *resultFile = fopen(resultName, "rb");
+            fseek(resultFile, 0, SEEK_END);
+            int fileSize = ftell(resultFile);
+            rewind(resultFile);
+
+            char *fileToSend = malloc(fileSize);
+            fread(fileToSend, 1, fileSize, resultFile);
+
+            struct messageHeader header;
+            header.messageSize = fileSize;
+            header.priority = taskQueue[0].priority;
+            header.taskID = currentTaskID;
+            memset(header.model, 0, sizeof(header.model));
+
+            if (sendMessage(receivingSocket, (const char *) &header, sizeof(header)) == -1) {
+                printf("ERREUR : L'envoi du header au client à échoué.\n");
+                goto end_loop;
+            }
+            printf("Envoi du header terminé.\n");
+
+            if (sendMessage(receivingSocket, fileToSend, fileSize) == -1) {
+                printf("ERREUR : L'envoi du fichier au client à échoué.\n");
+            }
+            printf("Envoi du fichier de résultat terminé.\n");
+
+            /* Nettoyer, mettre à jour la file d'attente puis boucler à l'étape 8. */
+            end_loop:
+            remove(resultName);
+            remove(filePath);
+            fclose(resultFile);
+            free(fileToSend);
+        } else if (currentTask.action == 1) {
+            /* Lancement de la compilation avec g++. */
+            pid_t pid;
+
+            if ((pid = fork()) == -1) {
+                printf("ERREUR : Le fork n'a pas fonctionné.\n");
                 continue;
             }
-            printf("Exécutable terminé avec succès.\n");
+
+            if (pid == 0) {
+                /* Dans le fils, on compile le fichier .cpp. */
+                printf("Lancement de la compilation g++.\n");
+
+                int argIndex = 0;
+
+                char outPath[128];
+                sprintf(outPath, "./models/%s", currentTask.model);
+
+                char inPath[128];
+                sprintf(inPath, "./inferenceFiles/%s.cpp", currentTask.model);
+
+                glob_t glob_resultats;
+    
+                int retourGlob1 = glob("/usr/src/tensorrt/samples/common/*.cpp", 0, NULL, &glob_resultats);
+                
+                int retourGlob2 = glob("/usr/src/tensorrt/samples/utils/*.cpp", GLOB_APPEND, NULL, &glob_resultats);
+                
+                if (retourGlob1 != 0 || retourGlob2 != 0) {
+                    printf("Erreur lors de la résolution des fichiers sources NVIDIA.\n");
+                    exit(EXIT_FAILURE);
+                }
+
+                char *argList[128];
+                argList[argIndex++] = "g++";
+                argList[argIndex++] = "-o";
+                argList[argIndex++] = outPath;
+                argList[argIndex++] = inPath;
+                for (size_t i = 0; i < glob_resultats.gl_pathc; i++) {
+                    argList[argIndex++] = glob_resultats.gl_pathv[i];
+                }
+                argList[argIndex++] = "-I/usr/src/tensorrt/samples/common";
+                argList[argIndex++] = "-I/usr/local/cuda/include";
+                argList[argIndex++] = "-I/usr/src/tensorrt/samples";
+                argList[argIndex++] = "-Wno-deprecated-declarations";
+                argList[argIndex++] = "-L/usr/local/cuda/lib64";
+                argList[argIndex++] = "-lnvinfer";
+                argList[argIndex++] = "-lnvonnxparser";
+                argList[argIndex++] = "-lcudart";
+                argList[argIndex++] = NULL;
+
+                execvp("g++", argList);
+                exit(EXIT_FAILURE);
+            } else {
+                /* Dans le père, on attends la fin de l'exécution du fils. */
+                int status;
+                waitpid(pid, &status, 0);
+
+                if (!WIFEXITED(status)) {
+                    printf("ERREUR.\n");
+                    struct messageHeader header;
+                    memset(&header, 0, sizeof(header));
+                    header.action = 2;
+                    header.taskID = currentTaskID;
+                    sendMessage(receivingSocket, (const char *) &header, sizeof(header));
+
+                    char onnxFileName[128];
+                    sprintf(onnxFileName, "./data/%s.onnx", header.model);
+                    char inferenceFileName[128];
+                    sprintf(inferenceFileName, "./inferenceFiles/%s.cpp", header.model);
+
+                    remove(inferenceFileName);
+                    remove(onnxFileName);
+                    continue;
+                }
+
+                if (WEXITSTATUS(status) != 0) {
+                    printf("ERREUR : La compilation s'est mal déroulée.\n");
+                    struct messageHeader header;
+                    memset(&header, 0, sizeof(header));
+                    header.action = 2;
+                    header.taskID = currentTaskID;
+                    sendMessage(receivingSocket, (const char *) &header, sizeof(header));
+
+                    char onnxFileName[128];
+                    sprintf(onnxFileName, "./data/%s.onnx", header.model);
+                    char inferenceFileName[128];
+                    sprintf(inferenceFileName, "./inferenceFiles/%s.cpp", header.model);
+
+                    remove(inferenceFileName);
+                    remove(onnxFileName);
+                    continue;
+                }
+                printf("Compilation terminée avec succès.\n");
+
+                if (sendMessage(receivingSocket, (const char *) &currentTask, sizeof(currentTask)) == -1) {
+                    printf("ERREUR : L'envoi du header au client à échoué.\n");
+                    continue;
+                }
+                printf("Envoi du header terminé.\n");
+            }
         }
-
-        /* 11. Envoyer les résultats sur le réseau. */
-        FILE *resultFile = fopen(resultName, "rb");
-        fseek(resultFile, 0, SEEK_END);
-        int fileSize = ftell(resultFile);
-        rewind(resultFile);
-
-        char *fileToSend = malloc(fileSize);
-        fread(fileToSend, 1, fileSize, resultFile);
-
-        struct messageHeader header;
-        header.messageSize = fileSize;
-        header.priority = taskQueue[0].priority;
-        header.taskID = currentTaskID;
-        memset(header.model, 0, sizeof(header.model));
-
-        if (sendMessage(receivingSocket, (const char *) &header, sizeof(header)) == -1) {
-            printf("ERREUR : L'envoi du header au client à échoué.\n");
-            goto end_loop;
-        }
-        printf("Envoi du header terminé.\n");
-
-        if (sendMessage(receivingSocket, fileToSend, fileSize) == -1) {
-            printf("ERREUR : L'envoi du fichier au client à échoué.\n");
-        }
-        printf("Envoi du fichier de résultat terminé.\n");
-
-        /* Nettoyer, mettre à jour la file d'attente puis boucler à l'étape 8. */
-        end_loop:
-        fclose(resultFile);
-        free(fileToSend);
-        remove(resultName);
-        remove(filePath);
     }
 
     close(communicationSocket);

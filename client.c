@@ -185,8 +185,8 @@ int main (int argc, char *argv[]) {
         int fileToSendFd;
         int fileSize = getFileSize(filePath, &fileToSendFd);
 
-        char *fileString = malloc((fileSize + 1) * sizeof(char));
-        memset(fileString, 0, (fileSize + 1) * sizeof(char));
+        char *fileString = malloc((fileSize + 1));
+        memset(fileString, 0, (fileSize + 1));
         
         readFromFile(fileSize, fileToSendFd, fileString, filePath);
 
@@ -208,22 +208,68 @@ int main (int argc, char *argv[]) {
             printf("ERREUR : L'envoi du fichier à traiter n'a pas pu aboutir.\n");
             goto cleanup;
         }
+
         cleanup:
         close(fileToSendFd);
         free(fileString);
     } else {
         /* Si on souhaite ajouter un nouveau modèle. */
+        int onnxFileFd;
+        int inferenceFileFd;
+
+        int onnxFileSize = getFileSize(argv[1], &onnxFileFd);
+        int inferenceFileSize = getFileSize(argv[2], &inferenceFileFd);
+
+        char *onnxFileString = malloc(onnxFileSize);
+        readFromFile(onnxFileSize, onnxFileFd, onnxFileString, argv[1]);
+        char *inferenceFileString = malloc(inferenceFileSize);
+        readFromFile(inferenceFileSize, inferenceFileFd, inferenceFileString, argv[2]);
+
+        char *fileName = basename(argv[1]);
+        char *lastDotPosition;
+        lastDotPosition = strrchr(fileName, '.');
+
+        char *modelName = malloc(lastDotPosition - fileName + 1);
+        snprintf(modelName, lastDotPosition - fileName + 1, "%s", fileName);
+        
         /* Envoyer le header avec le bon modèle, la priorité etc. */
         struct messageHeader header;
-        header.messageSize = 0;
-        header.priority = atoi(argv[3]);
+        header.messageSize = onnxFileSize;
+        header.priority = 0;
         header.taskID = 0;
         header.action = 1;
-        sprintf(header.model, "%s", argv[2]);
+        sprintf(header.model, "%s", modelName);
+
+        if (sendMessage(clientSocket, (const char *) &header, sizeof(header)) == -1) {
+            printf("ERREUR : L'envoi du premier header s'est mal déroulé.\n");
+            goto cleanup;
+        }
 
         /* Envoi du fichier .onnx. */
+        if (sendMessage(clientSocket, onnxFileString, onnxFileSize) == -1) {
+            printf("ERREUR : L'envoi du fichier .onnx s'est mal déroulé.\n");
+            goto cleanup;
+        }
+
+        /* Envoi du header pour la reception du fichier d'inférence. */
+        header.messageSize = inferenceFileSize;
+        header.priority = 0;
+        header.taskID = 0;
+        header.action = 1;
+        sprintf(header.model, "%s", modelName);
+
+        if (sendMessage(clientSocket, (const char *) &header, sizeof(header)) == -1) {
+            printf("ERREUR : L'envoi du premier header s'est mal déroulé.\n");
+            goto cleanup;
+        }
+
         /* Envoi du fichier d'inférence. */
-        /* Le modèle sera enregistré sous le nom du fichier d'inférence sans l'extension .cpp. */
+        if (sendMessage(clientSocket, inferenceFileString, inferenceFileSize) == -1) {
+            printf("ERREUR : L'envoi du fichier d'inférence s'est mal déroulé.\n");
+            goto cleanup;
+        }
+
+        printf("En attente de la confirmation de compilation de la worker, cela peut prendre jusqu'a 2 minutes.\n");
     }
 
     /* 3. Attente de réception des résultats depuis l'orchestrateur. */
@@ -235,13 +281,24 @@ int main (int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    if (header.action == 4) {
-        char availableModels[1030];
+    if (header.action == 1) {
+        printf("Compilation réalisée avec succès, le modèle %s est maintenant disponible sur les workers !\n", header.model);
+        exit(EXIT_SUCCESS);
+    } else if (header.action == 2) {
+        /* Si il y a eu une erreur de compilation ou d'exécution. */
+        printf("ERREUR : La tâche n'a pas pu être traitée par la worker.\n");
+        exit(EXIT_FAILURE);
+    } else if (header.action == 3) {
+        /* Si il n'y a aucune carte pouvant accepter de nouvelle tâche. */
+        printf("ERREUR : Aucune carte ne peut accepter de tâche pour le moment.\n");
+        exit(EXIT_FAILURE);
+    } else if (header.action == 4) {
+        /* Si le modèle n'existe pas. */
+        char *availableModels = malloc(header.messageSize);
         if (receiveMessage(clientSocket, availableModels, header.messageSize) == -1) {
             printf("ERREUR : Le message d'information de l'orchestrateur n'a pas pu être reçu.\n");
             exit(EXIT_FAILURE);
         }
-        
         printf("ERREUR : Veuillez choisir parmis les modèles suivants :\n");
         
         int i = 0;
@@ -255,22 +312,17 @@ int main (int argc, char *argv[]) {
             i++;
         }
         exit(EXIT_FAILURE);
-    } else if (header.action == 2) {
-        printf("ERREUR : La tâche n'a pas pu être traitée par la worker.\n");
-        exit(EXIT_FAILURE);
-    } else if (header.action == 3) {
-        printf("ERREUR : Aucune carte ne peut accepter de tâche pour le moment.\n");
-        exit(EXIT_FAILURE);
     }
 
-    char *results = malloc(header.messageSize * sizeof(char) + 1);
-    if (receiveMessage(clientSocket, results, header.messageSize * sizeof(char)) == -1) {
+    /* Récupération des résultats. */
+    char *results = malloc(header.messageSize + 1);
+    if (receiveMessage(clientSocket, results, header.messageSize) == -1) {
         printf("ERREUR : La réception des résultats s'est mal déroulée.\n");
         free(results);
         exit(EXIT_FAILURE);
     }
 
-    results[header.messageSize * sizeof(char)] = '\0';
+    results[header.messageSize] = '\0';
     printf("Résultats reçus :\n\n%s", results);
     return 0;
 }
