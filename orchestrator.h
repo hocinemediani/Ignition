@@ -62,7 +62,13 @@ typedef struct messageHeader {
     int messageSize;
     int priority;
     int taskID;
-    char command[1024];
+    char model[64];
+    /* 0 -> Utilisation d'un modèle existant,
+    *  1 -> Soumission d'un nouveau modèle,
+    *  2 -> Erreur de compilation/exécution worker,
+    *  3 -> Aucune carte n'est disponible pour prendre la tâche,
+    *  4 -> Modèle non existant. */
+    int action;
 } messageHeader;
 
 void sigIntHandler(int sig);

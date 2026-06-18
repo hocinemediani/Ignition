@@ -167,7 +167,7 @@ bool SampleOnnxMNIST::build()
         return false;
     }
 
-    std::ofstream engineFile("/usr/src/tensorrt/data/mnist/mnist.engine", std::ios::binary);
+    std::ofstream engineFile("./data/mnist.engine", std::ios::binary);
     if (!engineFile)
     {
         return false;
@@ -207,7 +207,7 @@ bool SampleOnnxMNIST::build()
 
 bool SampleOnnxMNIST::loadEngine()
 {
-    std::ifstream engineFile("/usr/src/tensorrt/data/mnist/mnist.engine", std::ios::binary);
+    std::ifstream engineFile("./data/mnist.engine", std::ios::binary);
     if (!engineFile)
     {
         return false;
@@ -408,7 +408,7 @@ samplesCommon::OnnxSampleParams initializeSampleParams(const samplesCommon::Args
     samplesCommon::OnnxSampleParams params;
     if (args.dataDirs.empty()) // Use default directories if user hasn't provided directory paths
     {
-        params.dataDirs.push_back("/usr/src/tensorrt/data/mnist");
+        params.dataDirs.push_back("./data");
     }
     else // Use the data directory provided by the user
     {
@@ -469,21 +469,10 @@ int main(int argc, char** argv)
         pgmFilePath = argv[2];
     }
     sample::gLogger.setReportableSeverity(nvinfer1::ILogger::Severity::kERROR);
-    bool argsOK = samplesCommon::parseArgs(args, argc, argv);
-    if (!argsOK)
-    {
-        printHelpInfo();
-        return EXIT_FAILURE;
-    }
-    if (args.help)
-    {
-        printHelpInfo();
-        return EXIT_SUCCESS;
-    }
 
     SampleOnnxMNIST sample(initializeSampleParams(args));
 
-    bool engineExists = (access("/usr/src/tensorrt/data/mnist/mnist.engine", F_OK) != -1);
+    bool engineExists = (access("./data/mnist.engine", F_OK) != -1);
 
     if (needsRebuild || !engineExists)
     {

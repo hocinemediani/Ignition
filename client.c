@@ -1,5 +1,7 @@
 #include "client.h"
 
+int regularRequest = 1;
+
 /** Méthode helper afin d'envoyer un bloc d'information à la carte worker.
  * @param clientSocket Le socket depuis lequel envoyer les informations
  * @param messageToSend Le message à envoyer
@@ -118,41 +120,56 @@ void connectToOrchestrator(socket_t *clientSocket) {
  * @param argv La liste des arguments donnée par l'utilisateur
  */
 void verifyUserInput(int argc, char *argv[]) {
-    if (argc < 4) {
-        printf("ERREUR : Spéficiez un nom de fichier à soumettre, le modèle voulu et une priorité pour le trafic.\n");
+    if (argc > 4 || argc < 3) {
+        printf("ERREUR : Vous pouvez utiliser le programme de deux façons :\n\t1. client nomDeFichier modeleVoulu priorite\n\t2. client fichierONNX fichierInference\n");
         exit(EXIT_FAILURE);
     }
 
-    if (strlen(argv[1]) > MAX_FILEPATH_LENGTH) {
-        printf("ERREUR : Le nom de fichier donné est trop long.\n");
-        exit(EXIT_FAILURE);
+    /* Si on souhaite utiliser les modèles présents. */
+    if (argc == 4) {
+        if (strlen(argv[1]) > MAX_FILEPATH_LENGTH) {
+            printf("ERREUR : Le nom de fichier donné est trop long.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        if (strlen(argv[2]) > MAX_FILEPATH_LENGTH) {
+            printf("ERREUR : Le nom de modèle donné est trop long.\n");
+            exit(EXIT_FAILURE);
+        }
+        
+        if (atoi(argv[3]) == 0) {
+            printf("Le troisième argument doit être la priorité du flux envoyé.\n");
+            exit(EXIT_FAILURE);
+        }
     }
 
-    if (strlen(argv[2]) > MAX_FILEPATH_LENGTH) {
-        printf("ERREUR : Le nom de modèle donné est trop long.\n");
-        exit(EXIT_FAILURE);
+    /* Si on souhaite soumettre un nouveau modèle. */
+    if (argc == 3) {
+        char *lastDotPosition;
+        if (((lastDotPosition = strrchr(argv[1], '.')) == NULL) || (strcmp(lastDotPosition + 1, "onnx") != 0)) {
+            printf("ERREUR : Veuillez spécifier un fichier de modèle conforme, du type .onnx.\n");
+            exit(EXIT_FAILURE);
+        }
+
+        if (((lastDotPosition = strrchr(argv[2], '.')) == NULL) || (strcmp(lastDotPosition + 1, "cpp") != 0)) {
+            printf("ERREUR : Veuillez spécifier un fichier d'inférence conforme, du type .cpp.\n");
+            exit(EXIT_FAILURE);
+        }
+        regularRequest = 0;
     }
 
-    char *lastDotPosition;
-    if (((lastDotPosition = strrchr(argv[1], '.')) == NULL) || (strcmp(lastDotPosition + 1, "pgm") != 0)) {
-        printf("ERREUR : Veuillez spécifier un fichier conforme, du type .pgm.\n");
-        exit(EXIT_FAILURE);
-    }
 }
 
 
 /** Fonction principale du client, permettant de :
  * - Vérifier la bonne extension du fichier à soumettre.
  * - Créer un socket se connectant à l'orchestrateur.
- * - Soumettre à l'orchestrateur le fichier .pgm pour traitement par les workers.
+ * - Soumettre à l'orchestrateur un fichier pour traitement par les workers.
  * - Récupérer les résultats depuis l'orchestrateur et les afficher à la console.
  */
 int main (int argc, char *argv[]) {
     /* 0. Vérification de l'input utilisateur. */
     verifyUserInput(argc, argv);
-
-    char filePath[MAX_FILEPATH_LENGTH];
-    sprintf(filePath, "%s", argv[1]);
 
     /* 1. Création d'un socket qui se connecte à l'orchestrateur. */
     init_connection();
@@ -160,42 +177,70 @@ int main (int argc, char *argv[]) {
     
     connectToOrchestrator(&clientSocket);
 
-    /* 2. Envoi du fichier.c à l'orchestrateur (envoi de données pour plus tard). */
-    int fileToSendFd;
-    int fileSize = getFileSize(filePath, &fileToSendFd);
+    if (regularRequest == 1) {
+        /* Si on souhaite utiliser les modèles présents. */
+        char filePath[MAX_FILEPATH_LENGTH];
+        sprintf(filePath, "%s", argv[1]);
 
-    char *fileString = malloc((fileSize + 1) * sizeof(char));
-    memset(fileString, 0, (fileSize + 1) * sizeof(char));
-    
-    readFromFile(fileSize, fileToSendFd, fileString, filePath);
+        int fileToSendFd;
+        int fileSize = getFileSize(filePath, &fileToSendFd);
 
-    struct messageHeader header;
-    header.messageSize = fileSize;
-    header.priority = atoi(argv[3]);
-    header.taskID = 0;
-    sprintf(header.command, "%s", argv[2]);
+        char *fileString = malloc((fileSize + 1) * sizeof(char));
+        memset(fileString, 0, (fileSize + 1) * sizeof(char));
+        
+        readFromFile(fileSize, fileToSendFd, fileString, filePath);
 
-    if (sendMessage(clientSocket, (const char *) &header, sizeof(header)) == -1) {
-        printf("ERREUR : L'envoi du header s'est mal déroulé.\n");
-        goto cleanup;
-    }
-    
-    if (sendMessage(clientSocket, fileString, fileSize) == -1) {
-        printf("ERREUR : L'envoi du fichier .pgm n'a pas pu aboutir.\n");
-        goto cleanup;
+        /* Envoyer le header avec le bon modèle, la priorité etc. */
+        struct messageHeader header;
+        header.messageSize = fileSize;
+        header.priority = atoi(argv[3]);
+        header.taskID = 0;
+        header.action = 0;
+        sprintf(header.model, "%s", argv[2]);
+
+        if (sendMessage(clientSocket, (const char *) &header, sizeof(header)) == -1) {
+            printf("ERREUR : L'envoi du header s'est mal déroulé.\n");
+            goto cleanup;
+        }
+
+        /* Envoyer le fichier à traiter. */
+        if (sendMessage(clientSocket, fileString, fileSize) == -1) {
+            printf("ERREUR : L'envoi du fichier à traiter n'a pas pu aboutir.\n");
+            goto cleanup;
+        }
+        cleanup:
+        close(fileToSendFd);
+        free(fileString);
+    } else {
+        /* Si on souhaite ajouter un nouveau modèle. */
+        /* Envoyer le header avec le bon modèle, la priorité etc. */
+        struct messageHeader header;
+        header.messageSize = 0;
+        header.priority = atoi(argv[3]);
+        header.taskID = 0;
+        header.action = 1;
+        sprintf(header.model, "%s", argv[2]);
+
+        /* Envoi du fichier .onnx. */
+        /* Envoi du fichier d'inférence. */
+        /* Le modèle sera enregistré sous le nom du fichier d'inférence sans l'extension .cpp. */
     }
 
     /* 3. Attente de réception des résultats depuis l'orchestrateur. */
+    struct messageHeader header;
     memset(&header, 0, sizeof(header));
 
     if (receiveMessage(clientSocket, &header, sizeof(header)) == -1) {
         printf("ERREUR : La réception du header s'est mal déroulée.\n");
-        goto cleanup;
+        exit(EXIT_FAILURE);
     }
 
-    if (header.priority == 9999) {
+    if (header.action == 4) {
         char availableModels[1030];
-        sprintf(availableModels, "%s", header.command);
+        if (receiveMessage(clientSocket, availableModels, header.messageSize) == -1) {
+            printf("ERREUR : Le message d'information de l'orchestrateur n'a pas pu être reçu.\n");
+            exit(EXIT_FAILURE);
+        }
         
         printf("ERREUR : Veuillez choisir parmis les modèles suivants :\n");
         
@@ -209,20 +254,23 @@ int main (int argc, char *argv[]) {
             printf("\n");
             i++;
         }
-        goto cleanup;
+        exit(EXIT_FAILURE);
+    } else if (header.action == 2) {
+        printf("ERREUR : La tâche n'a pas pu être traitée par la worker.\n");
+        exit(EXIT_FAILURE);
+    } else if (header.action == 3) {
+        printf("ERREUR : Aucune carte ne peut accepter de tâche pour le moment.\n");
+        exit(EXIT_FAILURE);
     }
 
     char *results = malloc(header.messageSize * sizeof(char) + 1);
     if (receiveMessage(clientSocket, results, header.messageSize * sizeof(char)) == -1) {
         printf("ERREUR : La réception des résultats s'est mal déroulée.\n");
-        goto cleanup;
+        free(results);
+        exit(EXIT_FAILURE);
     }
+
     results[header.messageSize * sizeof(char)] = '\0';
-
     printf("Résultats reçus :\n\n%s", results);
-
-    cleanup:
-    close(fileToSendFd);
-    free(fileString);
     return 0;
 }

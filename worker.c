@@ -17,14 +17,6 @@
 #define MAX_QUEUE_SIZE 10
 #define PORT 5798
 
-/* Structure d'en-tête pour notifier de la taille des informations transitant. */
-typedef struct messageHeader {
-    int messageSize;
-    int priority;
-    int taskID;
-    char command[1024];
-} messageHeader;
-
 /* Structure à envoyer sur le port 9988 pour informer d'un changement d'état de connexion ou de file d'attente. */
 typedef struct monitoringMessage {
     /* Possible types : HELLO, BYE, INFO. */
@@ -32,6 +24,20 @@ typedef struct monitoringMessage {
     int sizeLeft;
     int workerIndex;
 } monitoringMessage;
+
+/* Structure d'en-tête pour notifier de la taille des informations transitant. */
+typedef struct messageHeader {
+    int messageSize;
+    int priority;
+    int taskID;
+    char model[64];
+    /* 0 -> Utilisation d'un modèle existant,
+    *  1 -> Soumission d'un nouveau modèle,
+    *  2 -> Erreur de compilation/exécution worker,
+    *  3 -> Aucune carte n'est disponible pour prendre la tâche,
+    *  4 -> Modèle non existant. */
+    int action;
+} messageHeader;
 
 /* Booléen pour la terminaison du processus. */
 volatile sig_atomic_t isRunning = 1;
@@ -206,6 +212,11 @@ void* monitoringMain(void* _arg) {
         }
         printf("Réception du header réussie.\n");
 
+        if (header.action == 5) {
+            printf("Fermeture de l'orchestrateur enregistrée, terminaison du programme.\n");
+            exit(EXIT_SUCCESS);
+        }
+
         char *fileToCompile = malloc(header.messageSize * sizeof(char));
         if (receiveMessage(receivingSocket, fileToCompile, header.messageSize * sizeof(char)) == -1) {
             printf("ERREUR : Le fichier .pgm n'a pas pu être reçu.\n");
@@ -257,6 +268,7 @@ void* monitoringMain(void* _arg) {
         close(taskFd);
     }
 
+    close(monitoringSocket);
     return NULL;
 }
 
@@ -285,6 +297,12 @@ int main(void) {
     socketAddress.sin_family = AF_INET;
     socketAddress.sin_port = htons(PORT);
     socketAddress.sin_addr.s_addr = INADDR_ANY;
+
+    int opt = 1;
+    if (setsockopt(communicationSocket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        printf("ERREUR : Impossible d'appliquer SO_REUSEADDR.\n");
+        exit(EXIT_FAILURE);
+    }
 
     if (bind(communicationSocket, (const struct sockaddr *) &socketAddress, sizeof(socketAddress)) == -1) {
         printf("ERREUR : Le bind du socket à échoué.\n");
@@ -346,7 +364,7 @@ int main(void) {
 
         /* 10. L'exécuter et pipe sa sortie dans un fichier résultat. */
         char command[2048];
-        sprintf(command, "/usr/src/tensorrt/bin/%s", currentTask.command);
+        sprintf(command, "./models/%s", currentTask.model);
         
         char resultName[8];
         sprintf(resultName, "%d.txt", currentTaskID);
@@ -388,6 +406,11 @@ int main(void) {
 
             if (WEXITSTATUS(status) != 0) {
                 printf("ERREUR : Le lancement s'est mal déroulé.\n");
+                struct messageHeader header;
+                memset(&header, 0, sizeof(header));
+                header.action = 2;
+                header.taskID = currentTaskID;
+                sendMessage(receivingSocket, (const char *) &header, sizeof(header));
                 continue;
             }
             printf("Exécutable terminé avec succès.\n");
@@ -406,7 +429,7 @@ int main(void) {
         header.messageSize = fileSize;
         header.priority = taskQueue[0].priority;
         header.taskID = currentTaskID;
-        memset(header.command, 0, sizeof(header.command));
+        memset(header.model, 0, sizeof(header.model));
 
         if (sendMessage(receivingSocket, (const char *) &header, sizeof(header)) == -1) {
             printf("ERREUR : L'envoi du header au client à échoué.\n");
@@ -428,6 +451,6 @@ int main(void) {
     }
 
     close(communicationSocket);
-    close(monitoringSocket);
+    close(receivingSocket);
     return 0;
 }

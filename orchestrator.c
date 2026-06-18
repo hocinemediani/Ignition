@@ -6,8 +6,8 @@ int numConnectedCards = 0;
 /* Index de la dernière carte connectée. */
 int lastCardIndex = 0;
 
-char availableModels[1000] = "sample_onnx_mnist (.pgm files)\n";
-char *validModelNames[] = {"sample_onnx_mnist"};
+char availableModels[1000] = "mnist\n";
+char *validModelNames[] = {"mnist"};
 
 /* Indique si l'orchestrateur doit continuer à fonctionner ou non. */
 volatile sig_atomic_t isRunning = 1;
@@ -199,39 +199,53 @@ void* clientListening(void* _arg) {
     }
     printf("Réception du header du client %d.\n", arg->index);
 
-    int validModel = 0;
-    for (int i = 0; i < (int) (sizeof(validModelNames) / sizeof(validModelNames[1])); i++) {
-        if (strcmp(validModelNames[i], header.command) == 0) {
-            validModel = 1;
-            break;
-        }
-    }
-
-    if (validModel == 0) {
-        header.messageSize = 0;
-        header.priority = 9999;
-        header.taskID = 0;
-        sprintf(header.command, "%s", availableModels);
-
-        if (sendMessage(arg->socket, (const char *) &header, sizeof(header)) == -1) {
-            printf("ERREUR : Le header d'information sur les modèles n'a pas pu être envoyé au client.\n");
-            goto end_socket;
+    char *fileString1;
+    if (header.action == 0) {
+        /* Si le client souhaite utiliser un modèle. */
+        /* On vérifie que le modèle est bien un des modèles connus. */
+        int validModel = 0;
+        for (int i = 0; i < (int) (sizeof(validModelNames) / sizeof(validModelNames[1])); i++) {
+            if (strcmp(validModelNames[i], header.model) == 0) {
+                validModel = 1;
+                break;
+            }
         }
 
-        printf("Le header d'information sur les modèles à été envoyé au client avec succès.\n");
-        end_socket:
-        CLOSE_SOCKET(arg->socket);
-        return NULL;
-    }
+        /* Si il ne l'est pas, on envoie à l'utilisateur la liste des modèles. */
+        if (validModel == 0) {
+            header.messageSize = sizeof(availableModels);
+            header.priority = 0;
+            header.taskID = 0;
+            header.action = 4;
+            memset(header.model, 0, sizeof(header.model));
 
-    /* 5. Récupérer le fichier .pgm depuis le clientSocket. */
-    char *fileString = malloc(header.messageSize * sizeof(char));
-    if (receiveMessage(arg->socket, fileString, header.messageSize * sizeof(char)) == -1) {
-        printf("ERREUR : La réception du fichier .pgm n'a pas aboutie.\n");
-        CLOSE_SOCKET(arg->socket);
-        return NULL;
+            if (sendMessage(arg->socket, (const char *) &header, sizeof(header)) == -1) {
+                printf("ERREUR : Le header d'information sur les modèles n'a pas pu être envoyé au client.\n");
+                goto end_socket;
+            }
+
+            if (sendMessage(arg->socket, availableModels, sizeof(availableModels)) == -1) {
+                printf("ERREUR : Le message d'information sur les modèles n'a pas pu être envoyé au client.\n");
+                goto end_socket;
+            }
+            printf("Message d'information sur les modèles envoyé au client avec succès.\n");
+
+            end_socket:
+            CLOSE_SOCKET(arg->socket);
+            return NULL;
+        }
+
+        /* 5. Récupérer le fichier à traiter depuis le clientSocket. */
+        fileString1 = malloc(header.messageSize * sizeof(char));
+        if (receiveMessage(arg->socket, fileString1, header.messageSize * sizeof(char)) == -1) {
+            printf("ERREUR : La réception du fichier à traiter n'a pas aboutie.\n");
+            CLOSE_SOCKET(arg->socket);
+            return NULL;
+        }
+        printf("Réception du fichier à traiter du client %d.\n", arg->index);
+    } else {
+        /* Si le client souhaite soumettre un nouveau modèle. */
     }
-    printf("Réception du fichier .pgm du client %d.\n", arg->index);
 
     /* 6. Trouver la carte la moins utilisée par exploration de workerQueues. */
     int tries = 1;
@@ -251,6 +265,9 @@ void* clientListening(void* _arg) {
     if (minQueue <= 0) {
         if (tries == 5) {
             printf("ERREUR : Aucune carte ne peut accepter de tâche pour le moment.\n");
+            memset(&header, 0, sizeof(header));
+            header.action = 3;
+            sendMessage(arg->socket, (const char *) &header, sizeof(header));
             CLOSE_SOCKET(arg->socket);
             pthread_mutex_unlock(&queueMutex);
             return NULL;
@@ -279,11 +296,17 @@ void* clientListening(void* _arg) {
     }
     printf("Envoi du header réussi à la orin-nano-%d.\n", minQueueIndex);
 
-    if (sendMessage(workerSocketTable[minQueueIndex], fileString, header.messageSize * sizeof(char)) == -1) {
-        printf("ERREUR : L'envoi de la tâche à la orin-nano-%d à échoué.\n", minQueueIndex);
-        goto cleanup;
+    if (header.action == 0) {
+        /* Si on souhaite utiliser un modèle, on envoie uniquement le fichier à traiter. */
+        if (sendMessage(workerSocketTable[minQueueIndex], fileString1, header.messageSize * sizeof(char)) == -1) {
+            printf("ERREUR : L'envoi de la tâche à la orin-nano-%d à échoué.\n", minQueueIndex);
+            goto cleanup;
+        }
+        printf("Envoi de la tâche réussie à la orin-nano-%d.\n", minQueueIndex);
+    } else {
+        /* Si on souhaite soumettre un moèdle, on envoie le .onnx et le .cpp. */
     }
-    printf("Envoi de la tâche réussie à la orin-nano-%d.\n", minQueueIndex);
+
     cleanup:
     pthread_mutex_unlock(&workerMutexes[minQueueIndex]);
     return NULL;
@@ -494,6 +517,7 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
     /* Si le socket du serveur est prêt (il reçoit une requête), on l'accepte. */
     if (FD_ISSET(*mainSocket, fdSet)) {
         if ((clientSocket = (accept(*mainSocket, (struct sockaddr *) &clientAddress, &addressLength))) == INVALID_SOCKET) {
+            if (isRunning == 0) return;
             printf("ERREUR : La connexion au client s'est mal passée.\n");
             return;
         }
@@ -547,14 +571,22 @@ void* workerListening(void* _arg) {
         /* 8. Réceptionner les résultats. */
         struct messageHeader header;
         if (receiveMessage(arg->socket, &header, sizeof(header)) == -1) {
+            if (connectedCards[arg->index] == 0 || isRunning == 0) break;
             printf("ERREUR : Le header n'a pas pu être reçu depuis la orin-nano-%d\n", arg->index);
             break;
         }
         printf("Réception d'un header depuis la orin-nano-%d.\n", arg->index);
 
+        if (header.action == 2) {
+            sendMessage(routingTable[header.taskID], (const char *) &header, sizeof(header));
+            printf("ERREUR : La worker n'a pas pu compiler/exécuter la tâche.\n");
+            goto end_task;
+        }
+
         char *resultString = malloc(header.messageSize * sizeof(char));
         if (receiveMessage(arg->socket, resultString, header.messageSize * sizeof(char)) == -1) {
             printf("ERREUR : La réception du résultat depuis orin-nano-%d à échoué.\n", arg->index);
+            free(resultString);
             goto end_task;
         }
         printf("Réception du résultat depuis la orin-nano-%d.\n", arg->index);
@@ -562,6 +594,7 @@ void* workerListening(void* _arg) {
         /* 9. Envoyer le résultat au client concerné. */
         if (sendMessage(routingTable[header.taskID], (const char *) &header, sizeof(header)) == -1) {
             printf("ERREUR : Le header n'a pas pu être envoyé au client.\n");
+            free(resultString);
             goto end_task;
         }
         printf("Envoi du header au client depuis la orin-nano-%d.\n", arg->index);
@@ -574,10 +607,8 @@ void* workerListening(void* _arg) {
         end_task:
         CLOSE_SOCKET(routingTable[header.taskID]);
         routingTable[header.taskID] = 0;
-        free(resultString);
         printf("Réception terminée, coupure de la connexion au client depuis la orin-nano-%d\n", arg->index);
     }
-
     return NULL;
 }
 
@@ -637,6 +668,18 @@ int main(void) {
     /* Boucle de fonctionnement de l'orchestrateur. */
     while (isRunning == 1) {
         checkForConnections(&socketReadSet, &orchestratorSocket, socketTable, MAX_NUM_CONNECTION, 1, handleConnection);
+    }
+
+    /* Envoi en broadcast du message de fermeture de l'orchestrateur. */
+    struct messageHeader header;
+    memset(&header, 0, sizeof(header));
+    header.action = 5;
+    for (int i = 0; i < NUM_CARDS; i++) {
+        if (connectedCards[i] != 1) continue;
+        if (sendMessage(workerSocketTable[i], (const char *) &header, sizeof(header)) == -1) {
+            printf("ERREUR : Le message de fermeture de l'orchestrateur n'a pas pu être envoyé à la carte orin-nano-%d\n", i);
+        }
+        CLOSE_SOCKET(workerSocketTable[i]);
     }
     
     /* Fermeture de la connexion (windows) et libération de la mémoire allouée. */
