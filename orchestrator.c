@@ -248,10 +248,10 @@ void* clientListening(void* _arg) {
                 printf("ERREUR : Le message d'information sur les modèles n'a pas pu être envoyé au client.\n");
                 goto end_socket;
             }
-            free(messageToSend);
             printf("Message d'information sur les modèles envoyé au client avec succès.\n");
 
             end_socket:
+            free(messageToSend);
             CLOSE_SOCKET(arg->socket);
             return NULL;
         }
@@ -294,52 +294,52 @@ void* clientListening(void* _arg) {
         printf("Réception du fichier .cpp réalisée avec succès.\n");
     }
 
-    /* 6. Trouver la carte la moins utilisée par exploration de workerQueues. */
-    int tries = 1;
-    pthread_mutex_lock(&queueMutex);
-    try_queues:
-    int minQueue = -1;
-    int minQueueIndex = -1;
-
-    for (int i = 0; i < NUM_CARDS; i++) {
-        if ((workerQueues[i] > minQueue) && (connectedCards[i] == 1)) {
-            minQueue = workerQueues[i];
-            minQueueIndex = i;
-        }
-    }
-
-    /* Si toutes les cartes sont prises, on ré-essaye de trouver une carte libre. */
-    if (minQueue <= 0) {
-        if (tries == 5) {
-            printf("ERREUR : Aucune carte ne peut accepter de tâche pour le moment.\n");
-            memset(&header, 0, sizeof(header));
-            header.action = 3;
-            sendMessage(arg->socket, (const char *) &header, sizeof(header));
-            CLOSE_SOCKET(arg->socket);
-            pthread_mutex_unlock(&queueMutex);
-            return NULL;
-        }
-
-        tries++;
-        goto try_queues;
-    }
-    printf("La carte la moins remplie est la orin-nano-%d.\n", minQueueIndex);
-
-    /* L'exploration est finie, on libère le verrou et on change manuellement le nombre de places dans la file d'attente. */
-    workerQueues[minQueueIndex]--;
-    pthread_mutex_unlock(&queueMutex);
-
-    /* 7. Envoyer la tache à la carte la moins utilisée. */
-    pthread_mutex_lock(&idMutex);
-    header.taskID = currentTaskID;
-    routingTable[currentTaskID] = arg->socket;
-    currentTaskID = (currentTaskID + 1) % MAX_CONCURRENT_TASKS;
-    pthread_mutex_unlock(&idMutex);
-
-    pthread_mutex_lock(&workerMutexes[minQueueIndex]);
-
     if (header.action == 0) {
         /* Si on souhaite utiliser un modèle. */
+        /* 6. Trouver la carte la moins utilisée par exploration de workerQueues. */
+        int tries = 1;
+        pthread_mutex_lock(&queueMutex);
+        try_queues:
+        int minQueue = -1;
+        int minQueueIndex = -1;
+
+        for (int i = 0; i < NUM_CARDS; i++) {
+            if ((workerQueues[i] > minQueue) && (connectedCards[i] == 1)) {
+                minQueue = workerQueues[i];
+                minQueueIndex = i;
+            }
+        }
+
+        /* Si toutes les cartes sont prises, on ré-essaye de trouver une carte libre. */
+        if (minQueue <= 0) {
+            if (tries == 5) {
+                printf("ERREUR : Aucune carte ne peut accepter de tâche pour le moment.\n");
+                memset(&header, 0, sizeof(header));
+                header.action = 3;
+                sendMessage(arg->socket, (const char *) &header, sizeof(header));
+                CLOSE_SOCKET(arg->socket);
+                pthread_mutex_unlock(&queueMutex);
+                return NULL;
+            }
+
+            tries++;
+            goto try_queues;
+        }
+        printf("La carte la moins remplie est la orin-nano-%d.\n", minQueueIndex);
+
+        /* L'exploration est finie, on libère le verrou et on change manuellement le nombre de places dans la file d'attente. */
+        workerQueues[minQueueIndex]--;
+        pthread_mutex_unlock(&queueMutex);
+
+        /* 7. Envoyer la tache à la carte la moins utilisée. */
+        pthread_mutex_lock(&idMutex);
+        header.taskID = currentTaskID;
+        routingTable[currentTaskID] = arg->socket;
+        currentTaskID = (currentTaskID + 1) % MAX_CONCURRENT_TASKS;
+        pthread_mutex_unlock(&idMutex);
+
+        pthread_mutex_lock(&workerMutexes[minQueueIndex]);
+
         /* Envoi du header. */
         if (sendMessage(workerSocketTable[minQueueIndex], (const char *) &header, sizeof(header)) == -1) {
             printf("ERREUR : L'envoi du header à la orin-nano-%d à échoué.\n", minQueueIndex);
@@ -353,41 +353,49 @@ void* clientListening(void* _arg) {
             goto cleanup;
         }
         printf("Envoi de la tâche réussie à la orin-nano-%d.\n", minQueueIndex);
+        cleanup:
+        pthread_mutex_unlock(&workerMutexes[minQueueIndex]);
     } else {
-        /* Si on souhaite soumettre un modèle. */
-        header.messageSize = fileSize1;
+        /* Si on souhaite soumettre un modèle, on le soumets à toutes les carts connectées. */
+        for (int i = 0; i < NUM_CARDS; i++) {
+            if (connectedCards[i] == 0) {
+                continue;
+            }
+            header.messageSize = fileSize1;
 
-        /* Envoi du premier header. */
-        if (sendMessage(workerSocketTable[minQueueIndex], (const char *) &header, sizeof(header)) == -1) {
-            printf("ERREUR : L'envoi du premier header à la orin-nano-%d à échoué.\n", minQueueIndex);
-            goto cleanup;
-        }
-        printf("Envoi du premier header réussi à la orin-nano-%d.\n", minQueueIndex);
+            pthread_mutex_lock(&workerMutexes[i]);
+            /* Envoi du premier header. */
+            if (sendMessage(workerSocketTable[i], (const char *) &header, sizeof(header)) == -1) {
+                printf("ERREUR : L'envoi du premier header à la orin-nano-%d à échoué.\n", i);
+                goto cleanup;
+            }
+            printf("Envoi du premier header réussi à la orin-nano-%d.\n", i);
 
-        /* Envoi du fichier .onnx. */
-        if (sendMessage(workerSocketTable[minQueueIndex], fileString1, fileSize1) == -1) {
-            printf("ERREUR : L'envoi du fichier .onnx à la orin-nano-%d à échoué.\n", minQueueIndex);
-            goto cleanup;
-        }
+            /* Envoi du fichier .onnx. */
+            if (sendMessage(workerSocketTable[i], fileString1, fileSize1) == -1) {
+                printf("ERREUR : L'envoi du fichier .onnx à la orin-nano-%d à échoué.\n", i);
+                pthread_mutex_unlock(&workerMutexes[i]);
+                continue;
+            }
 
-        /* Envoi du second header. */
-        header.messageSize = fileSize2;
-        if (sendMessage(workerSocketTable[minQueueIndex], (const char *) &header, sizeof(header)) == -1) {
-            printf("ERREUR : L'envoi du second header à la orin-nano-%d à échoué.\n", minQueueIndex);
-            goto cleanup;
-        }
-        printf("Envoi du second header réussi à la orin-nano-%d.\n", minQueueIndex);
+            /* Envoi du second header. */
+            header.messageSize = fileSize2;
+            if (sendMessage(workerSocketTable[i], (const char *) &header, sizeof(header)) == -1) {
+                printf("ERREUR : L'envoi du second header à la orin-nano-%d à échoué.\n", i);
+                pthread_mutex_unlock(&workerMutexes[i]);
+                continue;
+            }
+            printf("Envoi du second header réussi à la orin-nano-%d.\n", i);
 
-        /* Envoi du fichier .cpp. */
-        if (sendMessage(workerSocketTable[minQueueIndex], fileString2, fileSize2) == -1) {
-            printf("ERREUR : L'envoi du fichier .cpp à la orin-nano-%d à échoué.\n", minQueueIndex);
-            goto cleanup;
+            /* Envoi du fichier .cpp. */
+            if (sendMessage(workerSocketTable[i], fileString2, fileSize2) == -1) {
+                printf("ERREUR : L'envoi du fichier .cpp à la orin-nano-%d à échoué.\n", i);
+                pthread_mutex_unlock(&workerMutexes[i]);
+                continue;
+            }
+            printf("Envoi de la tâche réussie à la orin-nano-%d.\n", i);
         }
-        printf("Envoi de la tâche réussie à la orin-nano-%d.\n", minQueueIndex);
     }
-
-    cleanup:
-    pthread_mutex_unlock(&workerMutexes[minQueueIndex]);
     return NULL;
 }
 
@@ -658,6 +666,7 @@ void* workerListening(void* _arg) {
 
         if (header.action == 1) {
             /* La soumission d'un nouveau modèle à fonctionnée. */
+            header.messageSize = arg->index;
             sendMessage(routingTable[header.taskID], (const char *) &header, sizeof(header));
             printf("Le modèle %s à bien été enregistré par la orin-nano-%d\n", header.model, arg->index);
             /* On ajoute le nouveau modèle à validModelNames. */

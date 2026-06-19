@@ -282,7 +282,7 @@ int main (int argc, char *argv[]) {
     }
 
     if (header.action == 1) {
-        printf("Compilation réalisée avec succès, le modèle %s est maintenant disponible sur les workers !\n", header.model);
+        printf("Compilation réalisée avec succès, le modèle %s est maintenant disponible sur la worker %d !\n", header.model, header.messageSize);
         exit(EXIT_SUCCESS);
     } else if (header.action == 2) {
         /* Si il y a eu une erreur de compilation ou d'exécution. */
