@@ -162,6 +162,7 @@ int getAndWriteFile(struct messageHeader header, char *prefix, char *fileName, c
     char *fileToGet = malloc(header.messageSize);
     if (receiveMessage(receivingSocket, fileToGet, header.messageSize) == -1) {
         printf("ERREUR : Le fichier à traiter n'a pas pu être reçu.\n");
+        free(fileToGet);
         return -1;
     }
     printf("Réception du fichier à traiter réussie.\n");
@@ -173,6 +174,7 @@ int getAndWriteFile(struct messageHeader header, char *prefix, char *fileName, c
 
     if (taskFd == -1) {
         printf("ERREUR : Le fichier n'a pas pu être créé ou existe déjà : %s.\n", filePath);
+        free(fileToGet);
         return -1;
     }
     printf("Ecriture du fichier à traiter à l'emplacement : %s.\n", filePath);
@@ -183,6 +185,7 @@ int getAndWriteFile(struct messageHeader header, char *prefix, char *fileName, c
         int bytesWritten = write(taskFd, fileToGet + writtenBytes, bytesToWrite);
         if (bytesWritten == -1) {
             printf("ERREUR : L'écriture du fichier %s s'est mal déroulée", filePath);
+            free(fileToGet);
             return -1;
         }
         if (bytesWritten == 0) {
@@ -203,6 +206,7 @@ void* monitoringMain(void* _arg) {
     /* 2. Créer un socket vers le port 9988 de l'orchestrateur */
     if ((monitoringSocket = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
         printf("ERREUR : Le socket n'a pas pu être créé.\n");
+        isRunning = 0;
         return NULL;
     }
     printf("Socket sur le port 9988 de l'orchestrateur créé.\n");
@@ -216,17 +220,20 @@ void* monitoringMain(void* _arg) {
 
     if (connect(monitoringSocket, (const struct sockaddr *) &orchestratorMonitoringAddress, sizeof(orchestratorMonitoringAddress)) == -1) {
         printf("ERREUR : La connexion au port de monitoring de l'orchestrateur à échoué.\n");
+        isRunning = 0;
         return NULL;
     }
     printf("Connexion au port 9988 de l'orchestrateur réussie.\n");
 
     /* 3. Envoyer un message de connexion à l'orchestrateur. */
     if (sendMonitoringMessage(0, "HELLO") == -1) {
+        isRunning = 0;
         return NULL;
     }
 
     pthread_mutex_lock(&varMutex);
     if (sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO") == -1) {
+        isRunning = 0;
         return NULL;
     }
     pthread_mutex_unlock(&varMutex);
@@ -249,26 +256,28 @@ void* monitoringMain(void* _arg) {
         struct messageHeader header;
         if (receiveMessage(receivingSocket, &header, sizeof(header)) == -1) {
             printf("ERREUR : Le header n'a pas pu être reçu.\n");
-            return NULL;
+            continue;
         }
-        printf("Réception du header réussie..\n");
+        printf("Réception du header réussie.\n");
 
         if (header.action == 0) {
             char fileName[4];
-            sprintf(fileName, "%c", header.taskID + '0');
-            getAndWriteFile(header, "", fileName, "");
+            sprintf(fileName, "%d", header.taskID);
+            if (getAndWriteFile(header, "", fileName, "") == -1) {
+                header.action = 2;
+                sendMessage(receivingSocket, (const char *) &header, sizeof(header));
+            }
         } else if (header.action == 1) {
             /* Sauvegarder un nouveau modèle. */
             /* On récupère le fichier .onnx. */
             if (getAndWriteFile(header, "./data/", header.model, ".onnx") == -1) {
                 header.action = 2;
-                sendMessage(receivingSocket, (const char *) &header, sizeof(header));
             }
 
             /* On récupère le second header. */
             if (receiveMessage(receivingSocket, &header, sizeof(header)) == -1) {
                 printf("ERREUR : Le second header n'a pas pu être reçu.\n");
-                return NULL;
+                continue;
             }
             printf("Réception du second header réussie.\n");
 
@@ -276,6 +285,7 @@ void* monitoringMain(void* _arg) {
             if (getAndWriteFile(header, "./inferenceFiles/", header.model, ".cpp") == -1) {
                 header.action = 2;
                 sendMessage(receivingSocket, (const char *) &header, sizeof(header));
+                continue;
             }
         } else if (header.action == 5) {
             /* Si l'orchestrateur s'est éteint. */
@@ -284,6 +294,8 @@ void* monitoringMain(void* _arg) {
         }
 
         /* 7. Les placer dans la file d'attente puis trier la file d'attente. */
+        if (header.action == 2) continue;
+
         pthread_mutex_lock(&varMutex);
         taskQueue[numTasksWaiting] = header;
         numTasksWaiting++;

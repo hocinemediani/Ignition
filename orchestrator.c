@@ -1,6 +1,5 @@
 #include "orchestrator.h"
 
-
 /* Nombre de cartes connectées sur le réseau. */
 int numConnectedCards = 0;
 /* Index de la dernière carte connectée. */
@@ -208,6 +207,14 @@ void* clientListening(void* _arg) {
     int fileSize1;
     int fileSize2;
 
+    /* Mettre à jour l'ID de tâche actuel. */
+    pthread_mutex_lock(&idMutex);
+    int taskID = currentTaskID;
+    header.taskID = currentTaskID;
+    routingTable[currentTaskID] = arg->socket;
+    currentTaskID = (currentTaskID + 1) % MAX_CONCURRENT_TASKS;
+    pthread_mutex_unlock(&idMutex);
+
     if (header.action == 0) {
         /* Si le client souhaite utiliser un modèle. */
         /* On vérifie que le modèle est bien un des modèles connus. */
@@ -282,6 +289,7 @@ void* clientListening(void* _arg) {
             CLOSE_SOCKET(arg->socket);
             return NULL;
         }
+        header.taskID = taskID;
 
         /* Réceptionner le fichier d'inférence. */
         fileString2 = malloc(header.messageSize);
@@ -330,14 +338,6 @@ void* clientListening(void* _arg) {
         /* L'exploration est finie, on libère le verrou et on change manuellement le nombre de places dans la file d'attente. */
         workerQueues[minQueueIndex]--;
         pthread_mutex_unlock(&queueMutex);
-
-        /* 7. Envoyer la tache à la carte la moins utilisée. */
-        pthread_mutex_lock(&idMutex);
-        header.taskID = currentTaskID;
-        routingTable[currentTaskID] = arg->socket;
-        currentTaskID = (currentTaskID + 1) % MAX_CONCURRENT_TASKS;
-        pthread_mutex_unlock(&idMutex);
-
         pthread_mutex_lock(&workerMutexes[minQueueIndex]);
 
         /* Envoi du header. */
@@ -394,6 +394,7 @@ void* clientListening(void* _arg) {
                 continue;
             }
             printf("Envoi de la tâche réussie à la orin-nano-%d.\n", i);
+            pthread_mutex_unlock(&workerMutexes[i]);
         }
     }
     return NULL;
@@ -666,6 +667,7 @@ void* workerListening(void* _arg) {
 
         if (header.action == 1) {
             /* La soumission d'un nouveau modèle à fonctionnée. */
+            if (routingTable[header.taskID] == 0) continue;
             header.messageSize = arg->index;
             sendMessage(routingTable[header.taskID], (const char *) &header, sizeof(header));
             printf("Le modèle %s à bien été enregistré par la orin-nano-%d\n", header.model, arg->index);
@@ -674,6 +676,7 @@ void* workerListening(void* _arg) {
             goto end_task;
         } else if (header.action == 2) {
             /* Une erreur de compilation ou d'exécution s'est produite au niveau de la worker. */
+            if (routingTable[header.taskID] == 0) continue;
             sendMessage(routingTable[header.taskID], (const char *) &header, sizeof(header));
             printf("ERREUR : La worker n'a pas pu compiler/exécuter la tâche.\n");
             goto end_task;
