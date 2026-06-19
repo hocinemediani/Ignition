@@ -19,7 +19,3 @@ for i in {0..5}; do
     echo "147.127.121.$((FIRST_ADDR + i)) orin-nano-$i" >> /etc/hosts
 done
 echo "Configuration de la résolution des autres workers faite."
-
-wget http://147.127.121.93:8080/samplesONNX/sampleOnnxMNIST.cpp
-mv sampleOnnxMNIST.cpp /usr/src/tensorrt/samples/sampleOnnxMNIST/sampleOnnxMNIST.cpp
-(cd /usr/src/tensorrt/samples/sampleOnnxMNIST && make)
