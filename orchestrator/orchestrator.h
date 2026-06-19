@@ -93,7 +93,7 @@ void getInformationFromWorker(socket_t workerSocket, int workerIndex);
 
 void* listenToWorkers(void *);
 
-void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTable, int tableSize, int read, void handler(socket_t, int));
+void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketList, int tableSize, int read, void handler(socket_t, int));
 
 void* workerListening(void* _arg);
 

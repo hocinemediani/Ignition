@@ -557,12 +557,12 @@ void* listenToWorkers(void *) {
  * voit son état changer.
  * @param fdSet Le set à surveiller
  * @param mainSocket Le socket principal inséré en premier
- * @param socketTable La table contenant les différents sockets à écouter
- * @param tableSize La table de la socketTable
+ * @param socketList La table contenant les différents sockets à écouter
+ * @param tableSize La taille de la socketList
  * @param read Vaut 1 si le set est un read set et 0 sinon
  * @param handler Fonction à appeler lorsqu'un socket change d'état
  */
-void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTable, int tableSize, int read, void handler(socket_t, int)) {
+void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketList, int tableSize, int read, void handler(socket_t, int)) {
     SOCKET clientSocket;
     struct sockaddr_in clientAddress;
     int addressLength = sizeof(struct sockaddr_in);
@@ -578,16 +578,16 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
     /* Insertion des sockets clients connus dans le set du select. */
     int highestSocketFd = *mainSocket;
     for (int i = 0; i < tableSize; i++) {
-        if (socketTable[i] == 0) {
+        if (socketList[i] == 0) {
             continue;
         }
 
         /* Utile pour la compatibilité sur systèmes POSIX. */
-        if ((int) socketTable[i] > highestSocketFd) {
-            highestSocketFd = socketTable[i];
+        if ((int) socketList[i] > highestSocketFd) {
+            highestSocketFd = socketList[i];
         }
 
-        FD_SET(socketTable[i], fdSet);
+        FD_SET(socketList[i], fdSet);
     }
     
     /* 3. Accepter les connexions entrantes et stocker les sockets. */
@@ -613,8 +613,8 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
 
         /* On insère le socket reçu dans le premier espace libre du tableau. */
         for (int i = 0; i < tableSize; i++) {
-            if (socketTable[i] == 0) {
-                socketTable[i] = clientSocket;
+            if (socketList[i] == 0) {
+                socketList[i] = clientSocket;
                 break;
             }
         }
@@ -622,13 +622,13 @@ void checkForConnections(fd_set *fdSet, socket_t *mainSocket, socket_t *socketTa
 
     /* On vérifie l'état des sockets, si l'un d'entre eux à une requête, on la traite. */
     for (int i = 0; i < tableSize; i++) {
-        if (socketTable[i] == 0) {
+        if (socketList[i] == 0) {
             continue;
         }
-        if (FD_ISSET(socketTable[i], fdSet)) {
+        if (FD_ISSET(socketList[i], fdSet)) {
             /* 4. Traiter les demandes lorsqu'elles arrivent (réception du header puis du fichier .pgm). */
             printf("Traitement de la connexion.\n");
-            handler(socketTable[i], i);
+            handler(socketList[i], i);
         }
     }
 }
