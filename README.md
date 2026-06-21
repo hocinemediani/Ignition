@@ -3,7 +3,7 @@
 It follows a simple Client --> Orchestrator --> Workers model, where multiple clients submit tasks in the form of a .cu file, and get the result back through the terminal.
 
 ## Each client submits a file that has to follow strict rules :
-- The file has to be a .cu file to use fully the power of the worker cards,
+- The file has to be a .cu file to fully use the power of the worker cards,
 - The file must compile, as the workers will do the compilation and execution jobs,
 - The file must output the desired results in the terminal for the cards to send it back.
 The resulting task also has a priority attached, given by the client depending on the priority of the task.
