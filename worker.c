@@ -55,6 +55,13 @@ pthread_cond_t varCondition;
 /* Verrou associé à la variable condition. */
 pthread_mutex_t varMutex;
 
+/* Variable condition permettant de commencer la réception des modèles. */
+pthread_cond_t initCondition;
+/* Verrou associé à la variable condition. */
+pthread_mutex_t initMutex;
+
+int isSocketReady = 0;
+
 /* Tableau de tâches. */
 messageHeader taskQueue[MAX_QUEUE_SIZE];
 /* Nombre de tâches en attente. */
@@ -231,13 +238,71 @@ void* monitoringMain(void* _arg) {
         return NULL;
     }
 
+    pthread_mutex_lock(&initMutex);
+    while (isSocketReady != 1 && isRunning == 1) {
+        pthread_cond_wait(&initCondition, &initMutex);
+    }
+    pthread_mutex_unlock(&initMutex);
+
+    /* Réception des modèles puis mise dans la file d'attente, sans envoi de header de confirmation. */
+    struct messageHeader header;
+    if (receiveMessage(receivingSocket, &header, sizeof(header)) == -1) {
+        printf("ERREUR : Le header pour la récupération des modèles n'a pas pu être récupéré.\n");
+        goto skip;
+    }
+    printf("Récupération du header de modèles, nombre de modèles à recevoir : %d.\n", header.messageSize);
+    int numModelsToGet = header.messageSize;
+
+    for (int i = 0; i < numModelsToGet; i++) {
+        int alreadyExists = 0;
+        if (receiveMessage(receivingSocket, &header, sizeof(header)) == -1) {
+            printf("ERREUR : Le header pour la récupération du modèle %d n'a pas pu être récupéré.\n", i);
+            isRunning = 0;
+            return NULL;
+        }
+        printf("Récupération du header du modèle %s réussie.\n", header.model);
+
+        if (getAndWriteFile(header, "./data/", header.model, ".onnx") == -1) {
+            printf("ERREUR : Le fichier %s.onnx n'a pas pu être écrit.\n", header.model);
+            alreadyExists = 1;
+        }
+        printf("Récupération du fichier %s.onnx réussie.\n", header.model);
+
+        /* On récupère le second header. */
+        if (receiveMessage(receivingSocket, &header, sizeof(header)) == -1) {
+            printf("ERREUR : Le second header n'a pas pu être reçu.\n");
+            isRunning = 0;
+            return NULL;
+        }
+        printf("Réception du second header pour le modèle %s réussie.\n", header.model);
+
+        /* On récupère le fichier .cpp. */
+        if (getAndWriteFile(header, "./inferenceFiles/", header.model, ".cpp") == -1) {
+            printf("ERREUR : Le fichier %s.cpp n'a pas pu être écrit.\n", header.model);
+            alreadyExists = 1;
+        }
+        printf("Récupération du fichier %s.cpp réussie.\n", header.model);
+
+        if (alreadyExists == 1) continue;
+        pthread_mutex_lock(&varMutex);
+        taskQueue[numTasksWaiting] = header;
+        numTasksWaiting++;
+        qsort(taskQueue, numTasksWaiting, sizeof(header), compareTasks);
+        pthread_cond_signal(&varCondition);
+        pthread_mutex_unlock(&varMutex);
+
+        printf("Tâche d'ID %d insérée dans la file d'attente.\n", header.taskID);
+    }
+
     pthread_mutex_lock(&varMutex);
     if (sendMonitoringMessage(MAX_QUEUE_SIZE - numTasksWaiting, "INFO") == -1) {
         isRunning = 0;
         return NULL;
     }
+    printf("Message d'info envoyé.\n");
     pthread_mutex_unlock(&varMutex);
 
+    skip:
     while (isRunning == 1) {
         fd_set socketReadSet;
 
@@ -323,7 +388,10 @@ int main(void) {
 
     pthread_cond_init(&varCondition, NULL);
     pthread_mutex_init(&varMutex, NULL);
-    printf("Initialisation de la variable condition et du mutex associé.\n");
+
+    pthread_cond_init(&initCondition, NULL);
+    pthread_mutex_init(&initMutex, NULL);
+    printf("Initialisation des variables condition et des mutexes associé.\n");
 
     /* Stocker l'id de la tache ET la priorité pour pouvoir trier la file d'attente. */
     memset(taskQueue, 0, sizeof(taskQueue));
@@ -371,6 +439,11 @@ int main(void) {
         exit(EXIT_FAILURE);
     }
     printf("Connexion à l'orchestrateur réussie.\n");
+
+    pthread_mutex_lock(&initMutex);
+    isSocketReady = 1;
+    pthread_cond_signal(&initCondition);
+    pthread_mutex_unlock(&initMutex);
 
     /* On écoute constamment pour pouvoir traiter des demandes à la chaine. */
     while(isRunning == 1) {

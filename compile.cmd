@@ -1,2 +1,2 @@
-set sortie=%~n1".exe"
-gcc -Wall -Wextra -Wpedantic -Wshadow %1 -l"ws2_32" -o %sortie%
+gcc -Wall -Wextra -Wpedantic -Wshadow orchestrator/orchestrator.c -l"ws2_32" -o orchestrator/orchestrator
+gcc -Wall -Wextra -Wpedantic -Wshadow client/client.c -l"ws2_32" -o client/client

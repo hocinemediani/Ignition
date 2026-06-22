@@ -71,6 +71,84 @@ void initInteruptHandling() {
 }
 
 
+/** Méthode helper afin d'obtenir la taille et un descripteur de fichier vers le fichier situé à filePath.
+ * @param filePath Le chemin auquel le fichier se trouve
+ * @param fileToSendFd Le descripteur de fichier sur filePath
+ * @return La taille du fichier situé à filePath
+ */
+int getFileSize(char *filePath, int *fileToSendFd) {
+    if ((*fileToSendFd = open(filePath, O_RDONLY | O_BINARY)) == -1) {
+        printf("ERREUR : Impossible d'ouvrir le fichier : %s", filePath);
+        exit(EXIT_FAILURE);
+    }
+
+    int fileSize = 0;
+    struct stat fileStats;
+    if (fstat(*fileToSendFd, &fileStats) == -1) {
+        printf("ERREUR : L'appel à fstat à échoué.\n");
+        exit(EXIT_FAILURE);
+    }
+    return fileSize = fileStats.st_size;
+}
+
+
+/** Méthode helper afin de lire un fichier situé à filePath dans la variable fileString.
+ * @param fileSize La taille du fichier à lire
+ * @param fileToSendFd Le descripteur de fichier pointant sur le fichier à lire
+ * @param fileString Le buffer à remplir du contenu du fichier lu
+ * @param filePath Le chemin vers le fichier, utilisé en cas d'erreur
+ */
+void readFromFile(int fileSize, int fileToSendFd, char *fileString, char *filePath) {
+    int readBytes = 0;
+    int bytesToRead = fileSize;
+    while (readBytes < fileSize) {
+        int bytesRead = 0;
+        if ((bytesRead = read(fileToSendFd, fileString + readBytes, bytesToRead)) == -1) {
+            printf("ERREUR : La lecture du fichier %s s'est mal déroulée.\n", filePath);
+            exit(EXIT_FAILURE);
+        }
+
+        if (bytesRead == 0) {
+            break;
+        }
+        readBytes += bytesRead;
+        bytesToRead -= bytesRead;
+    }
+}
+
+
+int writeFile(struct messageHeader header, char *fileToGet, char *prefix, char *fileName, char *suffix) {
+    /* 5. Ecrire le fichier dans la mémoire. */
+    char filePath[128];
+    sprintf(filePath, "%s%s%s", prefix, fileName, suffix);
+    int taskFd = open(filePath, O_CREAT | O_WRONLY | O_EXCL, 0666);
+
+    if (taskFd == -1) {
+        printf("ERREUR : Le fichier n'a pas pu être créé ou existe déjà : %s.\n", filePath);
+        return -1;
+    }
+    printf("Ecriture du fichier à traiter à l'emplacement : %s.\n", filePath);
+
+    int writtenBytes = 0;
+    int bytesToWrite = header.messageSize;
+    while (writtenBytes < (int) (header.messageSize)) {
+        int bytesWritten = write(taskFd, fileToGet + writtenBytes, bytesToWrite);
+        if (bytesWritten == -1) {
+            printf("ERREUR : L'écriture du fichier %s s'est mal déroulée", filePath);
+            return -1;
+        }
+        if (bytesWritten == 0) {
+            break;
+        }
+        writtenBytes += bytesWritten;
+        bytesToWrite -= bytesWritten;
+    }
+    printf("Ecriture du fichier %s terminée.\n", filePath);
+    close(taskFd);
+    return 0;
+}
+
+
 /** Méthode helper afin de recevoir un bloc d'information depuis le réseau.
  * @param clientSocketFd Le file descriptor du socket vers lequel sont envoyées les informations
  * @param messageToReceive Le message à recevoir du réseau
@@ -282,6 +360,7 @@ void* clientListening(void* _arg) {
             return NULL;
         }
         printf("Réception du fichier .onnx réalisée avec succès.\n");
+        writeFile(header, fileString1, "./savedmodels/", header.model, ".onnx");
 
         /* Réceptionner le second header. */
         if (receiveMessage(arg->socket, &header, sizeof(header)) == -1) {
@@ -300,6 +379,7 @@ void* clientListening(void* _arg) {
             return NULL;
         }
         printf("Réception du fichier .cpp réalisée avec succès.\n");
+        writeFile(header, fileString2, "./savedmodels/", header.model, ".cpp");
     }
 
     if (header.action == 0) {
@@ -356,14 +436,21 @@ void* clientListening(void* _arg) {
         cleanup:
         pthread_mutex_unlock(&workerMutexes[minQueueIndex]);
     } else {
-        /* Si on souhaite soumettre un modèle, on le soumets à toutes les carts connectées. */
+        /* Si on souhaite soumettre un modèle, on le soumets à toutes les cartes connectées. */
         for (int i = 0; i < NUM_CARDS; i++) {
+            if (numConnectedCards == 0) {
+                memset(&header, 0, sizeof(header));
+                header.action = 3;
+                sendMessage(arg->socket, (const char *) &header, sizeof(header));
+                return NULL;
+            }
             if (connectedCards[i] == 0) {
                 continue;
             }
             header.messageSize = fileSize1;
 
             pthread_mutex_lock(&workerMutexes[i]);
+
             /* Envoi du premier header. */
             if (sendMessage(workerSocketTable[i], (const char *) &header, sizeof(header)) == -1) {
                 printf("ERREUR : L'envoi du premier header à la orin-nano-%d à échoué.\n", i);
@@ -397,6 +484,8 @@ void* clientListening(void* _arg) {
             pthread_mutex_unlock(&workerMutexes[i]);
         }
     }
+    free(fileString1);
+    free(fileString2);
     return NULL;
 }
 
@@ -489,7 +578,60 @@ void getInformationFromWorker(socket_t workerSocket, int workerIndex) {
 
         /* Si son type est HELLO, déclarer connectedCards[i] = 1. */
         printf("Connexion de la carte orin-nano-%d\n", message.workerIndex);
+        numConnectedCards++;
         connectedCards[message.workerIndex] = 1;
+
+        /* Envoyer les modèles à la carte. */
+        struct messageHeader header;
+        header.messageSize = numModels;
+        header.priority = 0;
+        header.action = 1;
+        header.taskID = 999;
+        memset(header.model, 0, sizeof(header.model));
+
+        /* Header contenant le nombre de modèles à recevoir. */
+        sendMessage(connectionTestingSocket, (const char *) &header, sizeof(header));
+        printf("Envoi du header initial, de taille %d réussie.\n", header.messageSize);
+
+        for (int i = 0; i < numModels; i++) {
+            char *fileToSend;
+            int fileSize;
+            int fileToSendFd;
+            char modelFilePath[256];
+
+            /* Récupération du fichier .onnx. */
+            sprintf(modelFilePath, "./savedModels/%s.onnx", validModelNames[i]);
+            fileSize = getFileSize(modelFilePath, &fileToSendFd);
+            fileToSend = malloc(fileSize);
+            readFromFile(fileSize, fileToSendFd, fileToSend, modelFilePath);
+            sprintf(header.model, "%s", validModelNames[i]);
+            printf("Lecture du fichier %s.onnx réussie.\n", header.model);
+
+            /* Header .onnx. */
+            header.messageSize = fileSize;
+            sendMessage(connectionTestingSocket, (const char *) &header, sizeof(header));
+            /* Fichier .onnx. */
+            sendMessage(connectionTestingSocket, fileToSend, fileSize);
+            free(fileToSend);
+            printf("Envoi du fichier %s.onnx réussi.\n", header.model);
+
+            /* Récupération du fichier .cpp. */
+            memset(modelFilePath, 0, sizeof(modelFilePath));
+            sprintf(modelFilePath, "./savedModels/%s.cpp", validModelNames[i]);
+            fileSize = getFileSize(modelFilePath, &fileToSendFd);
+            fileToSend = malloc(fileSize);
+            readFromFile(fileSize, fileToSendFd, fileToSend, modelFilePath);
+            printf("Lecture du fichier %s.cpp réussie.\n", header.model);
+
+            /* Header .cpp. */
+            header.messageSize = fileSize;
+            sendMessage(connectionTestingSocket, (const char *) &header, sizeof(header));
+
+            /* Fichier .cpp. */
+            sendMessage(connectionTestingSocket, fileToSend, fileSize);
+            free(fileToSend);
+            printf("Envoi du fichier %s.cpp réussie.\n", header.model);
+        }
     } else if (strcmp(message.type, "BYE") == 0) {
         /* Si son type est BYE, déclarer connectedCards[i] = 0. */
         printf("Déconnexion de la carte orin-nano-%d\n", message.workerIndex);
@@ -504,6 +646,7 @@ void getInformationFromWorker(socket_t workerSocket, int workerIndex) {
         connectedCards[message.workerIndex] = 0;
         CLOSE_SOCKET(workerSocketTable[message.workerIndex]);
         workerSocketTable[message.workerIndex] = 0;
+        numConnectedCards--;
     }
 }
 
