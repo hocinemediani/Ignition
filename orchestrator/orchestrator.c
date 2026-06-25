@@ -5,7 +5,7 @@ int numConnectedCards = 0;
 /* Index de la dernière carte connectée. */
 int lastCardIndex = 0;
 
-/* Plus haut nombre de modèles connus. */
+/* Nombre de modèles connus. */
 int numModels = 0;
 /* Liste des noms de modèles existants. */
 char *validModelNames[100];
