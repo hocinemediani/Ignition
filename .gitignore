@@ -2,3 +2,7 @@
 client.exe
 worker.exe
 orchestrator.exe
+cameraWindows.exe
+include
+lib
+SDL2.dll
