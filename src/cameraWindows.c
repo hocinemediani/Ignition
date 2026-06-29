@@ -75,7 +75,7 @@ int main(int argc, char *argv[]) {
         WCHAR *deviceName;
         UINT32 nameLength = 0;
         ppDevices[i]->lpVtbl->GetAllocatedString(ppDevices[i], &MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, &deviceName, &nameLength);
-        printf("\t - %ls\n", deviceName);
+        printf("\t %d. - %ls\n", i, deviceName);
         CoTaskMemFree(deviceName);
     }
 
