@@ -2,3 +2,7 @@
 client.exe
 worker.exe
 orchestrator.exe
+bin
+lib
+include
+src
