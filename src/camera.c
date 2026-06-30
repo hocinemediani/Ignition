@@ -74,7 +74,7 @@ void *threadMain(void *_arg) {
         buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         buffer.memory = V4L2_MEMORY_MMAP;
         ioctl(desiredCameraFd, VIDIOC_DQBUF, &buffer);
-
+        
         /* Préparation du message pour le script python. */
         pthread_mutex_lock(&messageMutex);
         message.bufferIndex = buffer.index;
