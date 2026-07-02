@@ -13,6 +13,11 @@ struct videoBuffer {
     size_t length;
 } videoBuffer;
 
+struct cameraInfo {
+    int width;
+    int height;
+} cameraInfo;
+
 /* Descripteur de fichier pointant vers le flux de la caméra. */
 int desiredCameraFd = -1;
 /* Tableau de structures stockant les adresses et tailles des buffers vidéo. */
@@ -23,13 +28,57 @@ pthread_mutex_t bufferMutexes[NUM_BUFFERS];
 struct pythonMessage message;
 /* Mutex pour l'édition du message à envoyer. */
 pthread_mutex_t messageMutex;
-
+/* Struture contenant la résolution effective de la caméra. */
+struct cameraInfo camInfo;
 
 void endProgram(int toClean, int exitCode) {
     for (int i = 0; i < toClean; i++) {
         munmap(videoBuffers[i].start, videoBuffers[i].length);
     }
     exit(exitCode);
+}
+
+
+struct cameraInfo getCameraInfo() {
+    return camInfo;
+}
+
+
+void loadEngine() {
+    int engineFd = open("./models/yolov8n.engine", O_RDONLY);
+    if (engineFd != -1) {
+        printf("Engine trouvé.\n");
+        close(engineFd);
+        return;
+    }
+    printf("Engine non trouvé, lancement du build.\n");
+
+    char *argList[5];
+    argList[0] = strdup("/usr/src/tensorrt/bin/trtexec");
+    argList[1] = strdup("--onnx=./models/yolov8n.onnx");
+    argList[2] = strdup("--saveEngine=./models/yolov8n.engine");
+    argList[3] = strdup("--fp16");
+    argList[4] = NULL;
+
+    pid_t pid = fork();
+
+    if (pid == -1) {
+        printf("ERREUR : Impossible de créer le processus fils de build de l'engine.\n");
+        endProgram(0, EXIT_FAILURE);
+    } else if (pid == 0) {
+        int nullFd = open("/dev/null", O_WRONLY);
+        dup2(nullFd, STDOUT_FILENO);
+        close(nullFd);
+        execvp("/usr/src/tensorrt/bin/trtexec", argList);
+    } else {
+        int status;
+        wait(&status);
+        if (WEXITSTATUS(status) == 0) {
+            printf("Build du fichier .engine terminé.\n");
+        } else {
+            endProgram(0, EXIT_FAILURE);
+        }
+    }
 }
 
 
@@ -105,6 +154,8 @@ void *threadMain(void *_arg) {
 
 
 void initializeCamera(int cameraWidth, int cameraHeight, int cameraIndex) {
+    memset(&camInfo, 0, sizeof(camInfo));
+
     /* Récupérer les différentes caméras disponibles. */
     struct dirent **namelist;
     int scanReturn = scandir("/dev/", &namelist, filterFileName, alphasort);
@@ -175,6 +226,8 @@ void initializeCamera(int cameraWidth, int cameraHeight, int cameraIndex) {
         exit(EXIT_FAILURE);
     }
 
+    camInfo.width = videoFormat.fmt.pix.width;
+    camInfo.height = videoFormat.fmt.pix.height;
     printf("Format utilisé par la caméra : %d:%d\n", videoFormat.fmt.pix.width, videoFormat.fmt.pix.height);
 
     /* Configuration des paramètres du flux vidéo. */

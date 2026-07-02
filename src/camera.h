@@ -6,12 +6,18 @@
 #include <linux/videodev2.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <sys/mman.h>
 #include <pthread.h>
 
 #define NUM_BUFFERS 4
 
 void endProgram(int toClean, int exitCode);
+
+struct cameraInfo getCameraInfo();
+
+void loadEngine();
 
 int filterFileName(const struct dirent *file);
 
