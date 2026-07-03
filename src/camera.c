@@ -44,10 +44,10 @@ struct cameraInfo getCameraInfo() {
 }
 
 
-void loadEngine() {
+void loadEngine(const char *modelPath) {
     int engineFd = open("./models/yolov8n.engine", O_RDONLY);
     if (engineFd != -1) {
-        printf("Engine trouvé.\n");
+        printf("Engine trouvé, étape de build ignorée.\n");
         close(engineFd);
         return;
     }
@@ -55,7 +55,8 @@ void loadEngine() {
 
     char *argList[5];
     argList[0] = strdup("/usr/src/tensorrt/bin/trtexec");
-    argList[1] = strdup("--onnx=./models/yolov8n.onnx");
+    argList[1] = malloc(7 + strlen(modelPath) + 1);
+    sprintf(argList[1], "--onnx=%s", modelPath);
     argList[2] = strdup("--saveEngine=./models/yolov8n.engine");
     argList[3] = strdup("--fp16");
     argList[4] = NULL;
@@ -70,6 +71,7 @@ void loadEngine() {
         dup2(nullFd, STDOUT_FILENO);
         close(nullFd);
         execvp("/usr/src/tensorrt/bin/trtexec", argList);
+        endProgram(0, EXIT_FAILURE);
     } else {
         int status;
         wait(&status);
