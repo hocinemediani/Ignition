@@ -24,9 +24,10 @@ Any new task submitted when the card's queues are full will be dropped and the c
 In order to reduce downtime, workers use two threads : one to received tasks, send the monitoring messages and sort the queue, and the other to execute the first task in the queue.
 
 ## Branches :
-Currently there are two branches :
+Currently there are three branches :
  - The master branch is the classic distributive model where the workers get assigned a task given by the client in the form of a .cu file.
  - The inference branch where the client specifies an inference model to use and the data to analyse and get back the result.
+ - The camera branch where each jetson acts as an edge-ai node capturing and processing video data to recognize objects in its view.
 
 ## Future axis of development :
 - Accept a user-sent splitting function and aggregation function and re-wire the logic to split the tasks between the workers.
