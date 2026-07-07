@@ -1,22 +1,6 @@
 #include "camera.h"
 
-/* Structure servant à communiquer avec le script python. */
-struct pythonMessage {
-    void *start;
-    size_t size;
-    int bufferIndex;
-} pythonMessage;
-
-/* Structure conservant l'adresse du début du tableau de pixel et la taille maximale du buffer vidéo. */
-struct videoBuffer {
-    void *start;
-    size_t length;
-} videoBuffer;
-
-struct cameraInfo {
-    int width;
-    int height;
-} cameraInfo;
+/* gcc -I../include -L../lib client.c -o client -lmingw32 -lSDL2main -lSDL2 -lws2_32 */
 
 /* Descripteur de fichier pointant vers le flux de la caméra. */
 int desiredCameraFd = -1;
@@ -30,6 +14,25 @@ struct pythonMessage message;
 pthread_mutex_t messageMutex;
 /* Struture contenant la résolution effective de la caméra. */
 struct cameraInfo camInfo;
+/* Table des sockets clients connectés. */
+int socketTable[MAX_CONCURRENT_CONNECTIONS];
+/* Nombre de clients actuellement connectés. */
+int connectedClients = 0;
+
+int sendMessage(int clientSocket, const void *messageToSend, int size) {
+    int sentBytes = 0;
+    int bytesToSend = size;
+    while (sentBytes < size) {
+        int bytesSent = (send(clientSocket, messageToSend + sentBytes, bytesToSend, 0));
+        if (bytesSent == -1) {
+            return -1;
+        }
+        sentBytes += bytesSent;
+        bytesToSend -= bytesSent;
+    }
+    return 0;
+}
+
 
 void endProgram(int toClean, int exitCode) {
     for (int i = 0; i < toClean; i++) {
@@ -115,7 +118,7 @@ struct pythonMessage getLastFrame() {
 }
 
 
-void *threadMain(void *_arg) {
+void* threadMain(void *_arg) {
     (void) _arg;
 
     int previousBufferIndex = -1;
@@ -152,6 +155,80 @@ void *threadMain(void *_arg) {
 
     endProgram(NUM_BUFFERS, EXIT_SUCCESS);
     return NULL;
+}
+
+
+void* receivingMain(void *_arg) {
+    (void) _arg;
+    int workerSocket;
+    if ((workerSocket = socket(AF_INET, SOCK_STREAM, 0)) == -1) {
+        printf("ERREUR : Le socket du worker n'a pas pu être créé.\n");
+        endProgram(NUM_BUFFERS, EXIT_FAILURE);
+    }
+
+    struct sockaddr_in workerAddress;
+    memset(&workerAddress, 0, sizeof(workerAddress));
+    workerAddress.sin_addr.s_addr = INADDR_ANY;
+    workerAddress.sin_family = AF_INET;
+    workerAddress.sin_port = htons(9988);
+
+    if (bind(workerSocket, (const struct sockaddr *) &workerAddress, sizeof(workerAddress)) == -1) {
+        printf("ERREUR : Le bind du socket à échoué.\n");
+        endProgram(NUM_BUFFERS, EXIT_FAILURE);
+    }
+
+    if (listen(workerSocket, MAX_CONCURRENT_CONNECTIONS) == -1) {
+        printf("ERREUR : Le listen sur le socket n'a pas pu aboutir.\n");
+        endProgram(NUM_BUFFERS, EXIT_FAILURE);
+    }
+
+    fd_set socketReadSet;
+
+    for (int i = 0; i < MAX_CONCURRENT_CONNECTIONS; i++) {
+        socketTable[i] = 0;
+    }
+
+    while (1) {
+        struct timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 500;
+
+        FD_ZERO(&socketReadSet);
+        FD_SET(workerSocket, &socketReadSet);
+
+        int maxSocketFd = workerSocket;
+        for (int i = 0; i < connectedClients; i++) {
+            FD_SET(socketTable[i], &socketReadSet);
+            if (socketTable[i] > maxSocketFd) maxSocketFd = socketTable[i];
+        }
+
+        int selectReturn = select(maxSocketFd + 1, &socketReadSet, NULL, NULL, &timeout);
+
+        if (selectReturn == -1) continue;
+
+        if (FD_ISSET(workerSocket, &socketReadSet) && (connectedClients < MAX_CONCURRENT_CONNECTIONS)) {
+            socketTable[connectedClients++] = accept(workerSocket, NULL, NULL);
+            printf("Une nouvelle connexion s'est produite !\n");
+        }
+
+        for (int i = 0; i < connectedClients; i++) {
+            if (FD_ISSET(socketTable[i], &socketReadSet)) {
+                close(socketTable[i]);
+                socketTable[i] = socketTable[connectedClients - 1];
+                connectedClients--;
+                i--;
+            }
+        }
+    }
+}
+
+
+void sendImage(void *image, uint32_t imageSize) {
+    uint32_t size = htonl(imageSize);
+    for (int i = 0; i < connectedClients; i++) {
+        sendMessage(socketTable[i], &size, sizeof(imageSize));
+        sendMessage(socketTable[i], image, imageSize);
+    }
 }
 
 
@@ -282,5 +359,13 @@ void initializeCamera(int cameraWidth, int cameraHeight, int cameraIndex) {
         endProgram(NUM_BUFFERS, EXIT_FAILURE);
     } else {
         pthread_detach(imageYieldingThread);
+    }
+
+    pthread_t connectionReceivingThread;
+    if (pthread_create(&connectionReceivingThread, NULL, receivingMain, NULL) != 0) {
+        printf("ERREUR : Le thread de monitoring des connexions n'a pas pu être créé.\n");
+        endProgram(NUM_BUFFERS, EXIT_FAILURE);
+    } else {
+        pthread_detach(connectionReceivingThread);
     }
 }

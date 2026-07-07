@@ -43,6 +43,10 @@ CLASS_COLOR = np.random.randint(0, 256, size=(80, 3), dtype=int)
 
 # Configuration des différentes fonctions qui seront appelées.
 
+## void sendImage(void *image, uint32_t imageSize);
+lib.sendImage.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+lib.sendImage.restype = None
+
 ## void loadEngine(char *modelPath);
 lib.loadEngine.argtypes = [ctypes.c_char_p]
 lib.loadEngine.restype = None
@@ -219,7 +223,7 @@ for i in range (0, numTensors):
 
 # Définition de la fenêtre de prévisualisation.
 windowName = "Flux Jetson Orin Nano"
-cv2.namedWindow(windowName, cv2.WINDOW_NORMAL)
+#cv2.namedWindow(windowName, cv2.WINDOW_NORMAL)
 
 timer1 = 0
 timer2 = 0
@@ -302,7 +306,9 @@ while (True):
     ## Attente de la copie du résultat.
     cudaStream.synchronize()
 
-    ## Dessin des boîtes de détection.
+    # Dessin des boîtes de détection.
+
+    ## Récupération des boîtes et des prédictions / scores de confiance.
     numBoxes = buffers[1].item()
     for i in range (0, numBoxes):
         classNumber = int(buffers[4][0][i])
@@ -312,9 +318,13 @@ while (True):
         cv2.rectangle(fullRgbImage, (coordinates[0], coordinates[1]), (coordinates[2], coordinates[3]), boxColor, 5)
         cv2.putText(fullRgbImage, detectionString, (coordinates[0], coordinates[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, boxColor, 2)
 
-    ## Affichage de l'image à l'écran.
-    cv2.imshow(windowName, cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
+    ## Affichage de l'image à l'écran / envoi de l'image.
+    (unused, jpegArray) = cv2.imencode(".jpg", cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
+    imageToSend = jpegArray.ctypes.data_as(ctypes.c_void_p)
+    imageSize = jpegArray.size
+    lib.sendImage(imageToSend, imageSize)
+    #cv2.imshow(windowName, cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
     end = time.time()
-    cv2.setWindowTitle("Flux Jetson Orin Nano", "Flux Jetson Orin Nano, FPS : " + str(int(1 / (end - start))))
+    #cv2.setWindowTitle("Flux Jetson Orin Nano", "Flux Jetson Orin Nano, FPS : " + str(int(1 / (end - start))))
 
 cv2.destroyAllWindows()
