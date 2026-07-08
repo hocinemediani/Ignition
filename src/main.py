@@ -203,7 +203,6 @@ context = trtEngine.create_execution_context()
 
 numTensors = trtEngine.num_io_tensors
 buffers = []
-memoryPointers = []
 
 ## Allocation des buffers d'entrée et de sortie.
 for i in range (0, numTensors):
@@ -212,14 +211,14 @@ for i in range (0, numTensors):
     if (trtDType == trt.DataType.INT32):
         correctType = np.int32
 
-    ## Allocation du buffer host (en RAM).
-    buffers.append(cuda.pagelocked_empty(tuple(trtEngine.get_tensor_shape(trtEngine.get_tensor_name(i))), correctType))
-
-    ## Allocation du buffer device (en VRAM).
-    memoryPointers.append(cuda.mem_alloc(buffers[i].nbytes))
+    ## Allocation des buffers partagés.
+    buffers.append(cuda.managed_empty(
+                                tuple(trtEngine.get_tensor_shape(trtEngine.get_tensor_name(i))),
+                                correctType,
+                                mem_flags=cuda.mem_attach_flags.GLOBAL))
     
     ## Liaison (enregistrement) de l'adresse du buffer device dans le contexte TensorRT.
-    context.set_tensor_address(trtEngine.get_tensor_name(i), int(memoryPointers[i]))
+    context.set_tensor_address(trtEngine.get_tensor_name(i), buffers[i].ctypes.data)
 
 # Définition de la fenêtre de prévisualisation.
 windowName = "Flux Jetson Orin Nano"
@@ -294,14 +293,9 @@ while (True):
     
     ## Copie de l'image dans le buffer d'entrée.
     np.copyto(buffers[0].ravel(), image)
-    cuda.memcpy_htod_async(memoryPointers[0], buffers[0], cudaStream)
 
     ## Lancement de l'inférence.
     context.execute_async_v3(cudaStream.handle)
-
-    ## Récupération des résultats.
-    for i in range (1, numTensors):
-        cuda.memcpy_dtoh_async(buffers[i], memoryPointers[i], cudaStream)
 
     ## Attente de la copie du résultat.
     cudaStream.synchronize()
@@ -323,8 +317,8 @@ while (True):
     imageToSend = jpegArray.ctypes.data_as(ctypes.c_void_p)
     imageSize = jpegArray.size
     lib.sendImage(imageToSend, imageSize)
-    #cv2.imshow(windowName, cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
     end = time.time()
+    #cv2.imshow(windowName, cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
     #cv2.setWindowTitle("Flux Jetson Orin Nano", "Flux Jetson Orin Nano, FPS : " + str(int(1 / (end - start))))
 
 cv2.destroyAllWindows()

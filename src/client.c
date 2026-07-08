@@ -10,9 +10,6 @@
 #include <stdio.h>
 #include <signal.h>
 
-#define SDL_MAIN_HANDLED
-#include <SDL2/SDL.h>
-
 #define STB_IMAGE_IMPLEMENTATION
 #include "../include/stb_image.h"
 
@@ -23,6 +20,8 @@
     #include <windows.h>
     #include <process.h>
     #include <io.h>
+    #define SDL_MAIN_HANDLED
+    #include <SDL2/SDL.h>
 
     typedef SOCKET socket_t;
     #define CLOSE_SOCKET closesocket
@@ -146,6 +145,6 @@ int main(int argc, char *argv[]) {
 
         free(receivedImage);
     }
-    closesocket(clientSocket);
+    CLOSE_SOCKET(clientSocket);
     close_connection();
 }
