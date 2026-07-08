@@ -1,6 +1,6 @@
 # An Edge-AI Video Streaming Platform for Jetson Orin Nanos
 
-It follows a direct Client <-> Jetson Edge-AI Node model, where clients connect directly to a Jetson board to receive a real-time object detection stream.
+It follows a direct Client <--> Jetson Edge-AI Node model, where clients connect directly to a Jetson board to receive a real-time object detection stream.
 
 ## Architecture and Connections:
 - **Autonomous Nodes:** Each Jetson board operates independently as an Edge-AI node, managing its own camera capture, model inference, and network distribution.
