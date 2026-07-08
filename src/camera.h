@@ -41,7 +41,7 @@ void endProgram(int toClean, int exitCode);
 
 struct cameraInfo getCameraInfo();
 
-void loadEngine(const char *enginePath);
+void loadEngine(const char *enginePath, int needsRebuild);
 
 int filterFileName(const struct dirent *file);
 

@@ -47,9 +47,9 @@ struct cameraInfo getCameraInfo() {
 }
 
 
-void loadEngine(const char *modelPath) {
+void loadEngine(const char *modelPath, int needsRebuild) {
     int engineFd = open("./models/yolov8n.engine", O_RDONLY);
-    if (engineFd != -1) {
+    if (needsRebuild == 0 && engineFd != -1) {
         printf("Engine trouvé, étape de build ignorée.\n");
         close(engineFd);
         return;

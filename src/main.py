@@ -47,8 +47,8 @@ CLASS_COLOR = np.random.randint(0, 256, size=(80, 3), dtype=int)
 lib.sendImage.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 lib.sendImage.restype = None
 
-## void loadEngine(char *modelPath);
-lib.loadEngine.argtypes = [ctypes.c_char_p]
+## void loadEngine(char *modelPath, int needsRebuild);
+lib.loadEngine.argtypes = [ctypes.c_char_p, ctypes.c_int]
 lib.loadEngine.restype = None
 
 ## struct pythonMessage getLastFrame();
@@ -76,9 +76,11 @@ cameraWidth = camInfo.width
 cameraHeight = camInfo.height
 
 time.sleep(0.5)
+engineRebuild = 0
 
 # Optimisation du modèle.
 if (str(input("Souhaitez vous enregistrer les modifications au modèle ? ")) == "y"):
+    engineRebuild = 1
     onnxGraph = graphsurgeon.import_onnx(onnx.load("./models/yolov8n.onnx"))
 
     ## Normalisation de l'input.
@@ -191,7 +193,7 @@ if (str(input("Souhaitez vous enregistrer les modifications au modèle ? ")) == 
     onnx.save_model(newModel, "./models/yolov8nNMS.onnx")
 
 # Vérification de l'existence (ou build) de l'engine.
-lib.loadEngine(b"./models/yolov8nNMS.onnx")
+lib.loadEngine(b"./models/yolov8nNMS.onnx", engineRebuild)
 
 # Load de l'engine et du contexte.
 logger = trt.Logger(trt.Logger.ERROR)
