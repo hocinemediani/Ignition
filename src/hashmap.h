@@ -32,4 +32,6 @@ void printHashMap(struct hashMap *map);
 
 void clearHashMap(struct hashMap *map);
 
+int compareHashMap(struct hashMap *map1, struct hashMap *map2);
+
 void deleteHashmap(struct hashMap *map);

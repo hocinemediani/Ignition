@@ -141,6 +141,29 @@ void clearHashMap(struct hashMap *map) {
 }
 
 
+int compareHashMap(struct hashMap *map1, struct hashMap *map2) {
+    if (map1->size != map2->size) return -1;
+    if (map1->capacity != map2->capacity) return -1;
+
+    for (int i = 0; i < map1->capacity; i++) {
+        struct node *toExplore1 = map1->hashTable[i];
+        struct node *toExplore2 = map2->hashTable[i];
+
+        while (toExplore1 != NULL && toExplore2 != NULL) {
+            if (strcmp(toExplore1->key, toExplore2->key) != 0) return -1;
+            if (toExplore1->value != toExplore2->value) return -1;
+            toExplore1 = toExplore1->next;
+            toExplore2 = toExplore2->next;
+        }
+
+        if (toExplore1 == NULL && toExplore2 != NULL) return -1;
+        if (toExplore1 != NULL && toExplore2 == NULL) return -1;
+    }
+
+    return 0;
+}
+
+
 void deleteHashmap(struct hashMap *map) {
     for (int i = 0; i < map->capacity; i++) {
         struct node *toExplore = map->hashTable[i];

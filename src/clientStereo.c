@@ -55,11 +55,12 @@ struct threadContext {
     int workerIndex;
     int canGetImage;
     stbi_uc *pixelArray;
-    struct hashMap *hashMap;
     SDL_Texture *texture;
     SDL_Renderer *renderer;
+    struct hashMap *hashMap;
+    struct hashMap *previousHashMap;
     pthread_mutex_t *imageMutex;
-    char (*detectionStrings)[64];
+    char(*detectionList)[64];
 };
 
 Uint32 eventID;
@@ -137,17 +138,20 @@ void* receivingThreadMain(void *_arg) {
 
         /* Récupération du tableau correspondant à l'image. */
         if (pthread_mutex_trylock(context->imageMutex) == 0) {
-            // clearHashMap(context->hashTable);
+            struct hashMap *tempHashMap = context->previousHashMap;
+            context->previousHashMap = context->hashMap;
+            context->hashMap = tempHashMap;
+            clearHashMap(context->hashMap);
+
             if (context->pixelArray != NULL) stbi_image_free(context->pixelArray);
             context->pixelArray = stbi_load_from_memory((const stbi_uc *) receivedImage, imageSize, &imageWidth, &imageHeight, &comp, 4);
 
-            if (context->detectionStrings != NULL) free(context->detectionStrings);
-            context->detectionStrings = (char(*)[64]) detectionList;
+            if (context->detectionList != NULL) free(context->detectionList);
+            context->detectionList = ((char(*)[64]) detectionList);
 
             for (int i = 0; i < context->numBoxes; i++) {
-                updateNode(context->detectionStrings[i], 1, context->hashMap);
+                updateNode(context->detectionList[i], 1, context->hashMap);
             }
-            printHashMap(context->hashMap);
 
             context->imageWidth = imageWidth;
             context->canGetImage = 1;
@@ -172,9 +176,10 @@ void initializeContext(struct threadContext *context, SDL_Texture *texture, SDL_
     context->texture = texture;
     context->imageMutex = mutex;
     context->renderer = renderer;
-    context->detectionStrings = NULL;
+    context->detectionList = NULL;
     context->workerIndex = workerIndex;
     context->hashMap = initializeHashMap(128);
+    context->previousHashMap = initializeHashMap(128);
 }
 
 
@@ -190,17 +195,49 @@ void renderImage(struct threadContext *context) {
 
     stbi_image_free(context->pixelArray);
     context->pixelArray = NULL;
+
+    free(context->detectionList);
+    context->detectionList = NULL;
+
     context->canGetImage = 0;
-    free(context->detectionStrings);
-    context->detectionStrings = NULL;
-    printHashMap(context->hashMap);
-    clearHashMap(context->hashMap);
 
     pthread_mutex_unlock(context->imageMutex);
 
     SDL_RenderClear(context->renderer);
     SDL_RenderCopy(context->renderer, context->texture, NULL, NULL);
     SDL_RenderPresent(context->renderer);
+}
+
+
+void printDetections(struct threadContext *context1, struct threadContext *context2) {
+    pthread_mutex_lock(context1->imageMutex);
+    pthread_mutex_lock(context2->imageMutex);
+
+    if ((compareHashMap(context1->hashMap, context1->previousHashMap) == 0) && (compareHashMap(context2->hashMap, context2->previousHashMap) == 0)) goto unlock_mutexes;
+
+    if (context1->detectionList == NULL || context2->detectionList == NULL) {
+        goto unlock_mutexes;
+    }
+
+    int minBoxes = (context1->numBoxes < context2->numBoxes) ? context1->numBoxes : context2->numBoxes;
+
+    for (int i = 0; i < minBoxes; i++) {
+        int value1 = getValue(context1->detectionList[i], context1->hashMap);
+        int value2 = getValue(context2->detectionList[i], context2->hashMap);
+        if (value1 == value2) {
+            printf("Détection avec haut degré de confiance de %d %s.\n", value1, context1->detectionList[i]);
+        } else if (value1 > value2) {
+            printf("Détection avec haut degré de confiance de %d %s.\n", value2, context2->detectionList[i]);
+            printf("Détection avec faible degré de confiance de %d %s.\n", value1 - value2, context1->detectionList[i]);
+        } else {
+            printf("Détection avec haut degré de confiance de %d %s.\n", value1, context1->detectionList[i]);
+            printf("Détection avec faible degré de confiance de %d %s.\n", value2 - value1, context2->detectionList[i]);
+        }
+    }
+
+    unlock_mutexes:
+    pthread_mutex_unlock(context1->imageMutex);
+    pthread_mutex_unlock(context2->imageMutex);
 }
 
 
@@ -289,6 +326,8 @@ int main(int argc, char *argv[]) {
                 exit(EXIT_SUCCESS);
             }
             if (event.type == eventID) {
+                printDetections(&firstThreadContext, &secondThreadContext);
+
                 if (event.user.code == (Sint32) workerIndex1) {
                     renderImage(&firstThreadContext);
                 }
