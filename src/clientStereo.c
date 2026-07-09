@@ -118,23 +118,42 @@ void* receivingThreadMain(void *_arg) {
 
     while (1) {
         /* Récupération des détections. */
+
         int listSize;
-        receiveMessage(clientSocket, &listSize, sizeof(listSize));
-        int detectionSize = ntohs(listSize);
+        if (receiveMessage(clientSocket, &listSize, sizeof(listSize)) == -1) break;
+        int detectionSize = ntohl(listSize);
+        
         context->numBoxes = detectionSize / 64;
+
         void* detectionList = malloc(detectionSize);
-        receiveMessage(clientSocket, detectionList, detectionSize);
+        if (detectionList == NULL) exit(EXIT_FAILURE);
+        if (receiveMessage(clientSocket, detectionList, detectionSize) == -1) break;
 
         /* Récupération de la taille de l'image et l'image. */
         uint32_t size;
-        receiveMessage(clientSocket, &size, sizeof(size));
+        if (receiveMessage(clientSocket, &size, sizeof(size)) == -1) {
+            free(detectionList);
+            break;
+        }
         uint32_t imageSize = ntohl(size);
+
+        if (imageSize > 5 * 1024 * 1024) {
+            free(detectionList);
+            break;
+        }
+
         void* receivedImage = malloc(imageSize);
-        receiveMessage(clientSocket, receivedImage, imageSize);
+        if (receivedImage == NULL) exit(EXIT_FAILURE);
+        if (receiveMessage(clientSocket, receivedImage, imageSize) == -1) {
+            free(receivedImage);
+            break;
+        }
 
         int imageWidth;
         int imageHeight;
         int comp;
+
+        stbi_uc *pixelArray = stbi_load_from_memory((const stbi_uc *) receivedImage, imageSize, &imageWidth, &imageHeight, &comp, 4);
 
         /* Récupération du tableau correspondant à l'image. */
         if (pthread_mutex_trylock(context->imageMutex) == 0) {
@@ -144,7 +163,7 @@ void* receivingThreadMain(void *_arg) {
             clearHashMap(context->hashMap);
 
             if (context->pixelArray != NULL) stbi_image_free(context->pixelArray);
-            context->pixelArray = stbi_load_from_memory((const stbi_uc *) receivedImage, imageSize, &imageWidth, &imageHeight, &comp, 4);
+            context->pixelArray = pixelArray;
 
             if (context->detectionList != NULL) free(context->detectionList);
             context->detectionList = ((char(*)[64]) detectionList);
@@ -159,12 +178,14 @@ void* receivingThreadMain(void *_arg) {
             pthread_mutex_unlock(context->imageMutex);
         } else {
             free(detectionList);
+            stbi_image_free(pixelArray);
         }
         
         free(receivedImage);
     }
 
     CLOSE_SOCKET(clientSocket);
+    exit(EXIT_FAILURE);
     return NULL;
 }
 
@@ -192,13 +213,6 @@ void renderImage(struct threadContext *context) {
     }
 
     SDL_UpdateTexture(context->texture, NULL, context->pixelArray, context->imageWidth * 4);
-
-    stbi_image_free(context->pixelArray);
-    context->pixelArray = NULL;
-
-    free(context->detectionList);
-    context->detectionList = NULL;
-
     context->canGetImage = 0;
 
     pthread_mutex_unlock(context->imageMutex);
@@ -219,19 +233,39 @@ void printDetections(struct threadContext *context1, struct threadContext *conte
         goto unlock_mutexes;
     }
 
-    int minBoxes = (context1->numBoxes < context2->numBoxes) ? context1->numBoxes : context2->numBoxes;
+    for (int i = 0; i < context1->hashMap->capacity; i++) {
+        struct node *toExplore = context1->hashMap->hashTable[i];
 
-    for (int i = 0; i < minBoxes; i++) {
-        int value1 = getValue(context1->detectionList[i], context1->hashMap);
-        int value2 = getValue(context2->detectionList[i], context2->hashMap);
-        if (value1 == value2) {
-            printf("Détection avec haut degré de confiance de %d %s.\n", value1, context1->detectionList[i]);
-        } else if (value1 > value2) {
-            printf("Détection avec haut degré de confiance de %d %s.\n", value2, context2->detectionList[i]);
-            printf("Détection avec faible degré de confiance de %d %s.\n", value1 - value2, context1->detectionList[i]);
-        } else {
-            printf("Détection avec haut degré de confiance de %d %s.\n", value1, context1->detectionList[i]);
-            printf("Détection avec faible degré de confiance de %d %s.\n", value2 - value1, context2->detectionList[i]);
+        while (toExplore != NULL) {
+            int value1 = toExplore->value;
+            int value2 = getValue(toExplore->key, context2->hashMap);
+
+            if (value1 == -1) break;
+
+            if (value2 == -1) value2 = 0;
+
+            if (value1 == value2) {
+                printf("Détection avec haut degré de confiance de %d %s.\n", value1, toExplore->key);
+            } else if (value1 != value2) {
+                printf("Détection avec faible degré de confiance de %d %s.\n", abs(value1 - value2), toExplore->key);
+            }
+
+            toExplore = toExplore->next;
+        }
+    }
+
+    /* Affichage des objets détectés par la caméra 2 et non détectés par la caméra 1. */
+    for (int i = 0; i < context2->hashMap->capacity; i++) {
+
+        struct node *toExplore = context2->hashMap->hashTable[i];
+
+        while (toExplore != NULL) {
+            int value1 = getValue(toExplore->key, context1->hashMap);
+            int value2 = toExplore->value;
+
+            if (value1 == -1) printf("Détection avec faible degré de confiance de %d %s.\n", value2, toExplore->key);
+
+            toExplore = toExplore->next;
         }
     }
 

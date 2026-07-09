@@ -222,7 +222,7 @@ void* receivingMain(void *_arg) {
 
 
 void sendDetections(void *detectionList, int size) {
-    int networkSize = htons(size);
+    int networkSize = htonl(size);
     for (int i = 0; i < connectedClients; i++) {
         sendMessage(socketTable[i], &networkSize, sizeof(networkSize));
         sendMessage(socketTable[i], detectionList, size);
