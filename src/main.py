@@ -43,6 +43,10 @@ CLASS_COLOR = np.random.randint(0, 256, size=(80, 3), dtype=int)
 
 # Configuration des différentes fonctions qui seront appelées.
 
+## void sendDetections(void *detectionList, int size);
+lib.sendDetections.argtypes = [ctypes.c_void_p, ctypes.c_int]
+lib.sendDetections.restype = None
+
 ## void sendImage(void *image, uint32_t imageSize);
 lib.sendImage.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 lib.sendImage.restype = None
@@ -226,13 +230,6 @@ for i in range (0, numTensors):
 windowName = "Flux Jetson Orin Nano"
 #cv2.namedWindow(windowName, cv2.WINDOW_NORMAL)
 
-timer1 = 0
-timer2 = 0
-timer3 = 0
-timer4 = 0
-timer5 = 0
-numFrames = 0
-
 # Boucle de fonctionnement.
 while (True):
     # Récupération de l'image.
@@ -306,11 +303,17 @@ while (True):
 
     ## Récupération des boîtes et des prédictions / scores de confiance.
     numBoxes = buffers[1].item()
+
+    stringElem = ctypes.c_char * 64
+    bufferType = stringElem * numBoxes
+    contiguousBuffer = bufferType()
+
     for i in range (0, numBoxes):
         classNumber = int(buffers[4][0][i])
         boxColor = tuple(CLASS_COLOR[classNumber].tolist())
         coordinates = [int(buffers[2][0][i][j]) for j in range(0, 4)]
         detectionString = COCO_CLASSES[classNumber] + " : " + str(round(buffers[3][0][i], 3)) + "%"
+        contiguousBuffer[i].value = COCO_CLASSES[classNumber].encode("utf-8")
         cv2.rectangle(fullRgbImage, (coordinates[0], coordinates[1]), (coordinates[2], coordinates[3]), boxColor, 5)
         cv2.putText(fullRgbImage, detectionString, (coordinates[0], coordinates[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, boxColor, 2)
 
@@ -318,7 +321,10 @@ while (True):
     (unused, jpegArray) = cv2.imencode(".jpg", cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
     imageToSend = jpegArray.ctypes.data_as(ctypes.c_void_p)
     imageSize = jpegArray.size
+
+    lib.sendDetections(ctypes.addressof(contiguousBuffer), ctypes.sizeof(contiguousBuffer))
     lib.sendImage(imageToSend, imageSize)
+
     end = time.time()
     #cv2.imshow(windowName, cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
     #cv2.setWindowTitle("Flux Jetson Orin Nano", "Flux Jetson Orin Nano, FPS : " + str(int(1 / (end - start))))

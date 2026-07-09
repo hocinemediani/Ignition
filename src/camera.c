@@ -1,7 +1,5 @@
 #include "camera.h"
 
-/* gcc -I../include -L../lib client.c -o client -lmingw32 -lSDL2main -lSDL2 -lws2_32 */
-
 /* Descripteur de fichier pointant vers le flux de la caméra. */
 int desiredCameraFd = -1;
 /* Tableau de structures stockant les adresses et tailles des buffers vidéo. */
@@ -219,6 +217,15 @@ void* receivingMain(void *_arg) {
                 i--;
             }
         }
+    }
+}
+
+
+void sendDetections(void *detectionList, int size) {
+    int networkSize = htons(size);
+    for (int i = 0; i < connectedClients; i++) {
+        sendMessage(socketTable[i], &networkSize, sizeof(networkSize));
+        sendMessage(socketTable[i], detectionList, size);
     }
 }
 

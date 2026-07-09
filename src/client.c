@@ -13,6 +13,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "../include/stb_image.h"
 
+/* gcc -Wall -Wextra -I../include -L../lib client.c -o client -lmingw32 -lSDL2main -lSDL2 -lws2_32 */
 
 /* Instructions préprocesseur pour différencier les architectures linux de windows qui ont des imports différents. */
 #ifdef _WIN32
@@ -65,6 +66,7 @@ int receiveMessage(socket_t clientSocketFd, void *messageToReceive, int size) {
 
 int main(int argc, char *argv[]) {
     init_connection();
+
     if (argc != 2) {
         printf("ERREUR : Veuillez renseigner l'index de la carte à laquelle vous souhaitez vous connecter.\n");
         exit(EXIT_FAILURE);
@@ -145,6 +147,7 @@ int main(int argc, char *argv[]) {
 
         free(receivedImage);
     }
+
     CLOSE_SOCKET(clientSocket);
     close_connection();
 }

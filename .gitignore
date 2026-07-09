@@ -7,3 +7,4 @@ include
 lib
 SDL2.dll
 camera.exe
+clientStereo.exe
