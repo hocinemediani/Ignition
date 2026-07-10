@@ -233,6 +233,8 @@ void printDetections(struct threadContext *context1, struct threadContext *conte
         goto unlock_mutexes;
     }
 
+    printf("\n\n\n\n");
+
     for (int i = 0; i < context1->hashMap->capacity; i++) {
         struct node *toExplore = context1->hashMap->hashTable[i];
 
@@ -268,6 +270,8 @@ void printDetections(struct threadContext *context1, struct threadContext *conte
             toExplore = toExplore->next;
         }
     }
+
+    printf("\n\n\n\n");
 
     unlock_mutexes:
     pthread_mutex_unlock(context1->imageMutex);

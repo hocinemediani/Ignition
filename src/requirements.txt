@@ -1,0 +1,6 @@
+numpy==1.21.5
+onnx==1.22.0
+onnx_graphsurgeon==0.6.1
+opencv_python==4.13.0.92
+pycuda==2026.1
+tensorrt==10.3.0
