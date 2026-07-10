@@ -249,6 +249,7 @@ void printDetections(struct threadContext *context1, struct threadContext *conte
             if (value1 == value2) {
                 printf("Détection avec haut degré de confiance de %d %s.\n", value1, toExplore->key);
             } else if (value1 != value2) {
+                printf("Détection avec haut degré de confiance de %d %s.\n", value1 < value2 ? value1 : value2, toExplore->key);
                 printf("Détection avec faible degré de confiance de %d %s.\n", abs(value1 - value2), toExplore->key);
             }
 
