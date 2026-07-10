@@ -119,6 +119,17 @@ int main(int argc, char *argv[]) {
 
     SDL_Event event;
     while (1) {
+        /* Récupération des détections. */
+        int listSize;
+        if (receiveMessage(clientSocket, &listSize, sizeof(listSize)) == -1) break;
+        int detectionSize = ntohl(listSize);
+
+        void* detectionList = malloc(detectionSize);
+        if (detectionList == NULL) exit(EXIT_FAILURE);
+        if (receiveMessage(clientSocket, detectionList, detectionSize) == -1) break;
+
+        free(detectionList);
+
         /* Récupérer la taille de l'image et l'image. */
         uint32_t size;
         receiveMessage(clientSocket, &size, sizeof(size));
