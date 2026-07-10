@@ -242,16 +242,17 @@ void printDetections(struct threadContext *context1, struct threadContext *conte
             int value1 = toExplore->value;
             int value2 = getValue(toExplore->key, context2->hashMap);
 
-            if (value1 == -1) break;
-
-            if (value2 == -1) value2 = 0;
-
-            if (value1 == value2) {
-                printf("Détection avec haut degré de confiance de %d %s.\n", value1, toExplore->key);
-            } else if (value1 != value2) {
-                printf("Détection avec haut degré de confiance de %d %s.\n", value1 < value2 ? value1 : value2, toExplore->key);
-                printf("Détection avec faible degré de confiance de %d %s.\n", abs(value1 - value2), toExplore->key);
+            if (value1 == -1) {
+                toExplore = toExplore->next;
+                continue;
             }
+
+            if (value2 == -1) {
+                value2 = 0;
+            } else {
+                printf("Détection avec haut degré de confiance de %d %s.\n", value1 < value2 ? value1 : value2, toExplore->key);
+            }
+            if (value1 != value2) printf("Détection avec faible degré de confiance de %d %s.\n", abs(value1 - value2), toExplore->key);
 
             toExplore = toExplore->next;
         }
