@@ -366,7 +366,7 @@ int main(int argc, char *argv[]) {
                 exit(EXIT_SUCCESS);
             }
             if (event.type == eventID) {
-                printDetections(&firstThreadContext, &secondThreadContext);
+                // printDetections(&firstThreadContext, &secondThreadContext);
 
                 if (event.user.code == (Sint32) workerIndex1) {
                     renderImage(&firstThreadContext);
