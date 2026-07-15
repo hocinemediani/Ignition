@@ -119,16 +119,22 @@ int main(int argc, char *argv[]) {
 
     SDL_Event event;
     while (1) {
+        /* Récupération des x_min et y_min. */
+        int coordinateSize;
+        if (receiveMessage(clientSocket, &coordinateSize, sizeof(coordinateSize)) == -1) break;
+        int coordinateListSize = ntohl(coordinateSize);
+
+        int *coordinateList = (int *) malloc(coordinateListSize);
+        if ((receiveMessage(clientSocket, coordinateList, coordinateListSize)) == -1) break;
+
         /* Récupération des détections. */
         int listSize;
         if (receiveMessage(clientSocket, &listSize, sizeof(listSize)) == -1) break;
         int detectionSize = ntohl(listSize);
 
-        void* detectionList = malloc(detectionSize);
+        char (*detectionList)[64] = (char(*)[64]) malloc(detectionSize);
         if (detectionList == NULL) exit(EXIT_FAILURE);
         if (receiveMessage(clientSocket, detectionList, detectionSize) == -1) break;
-
-        free(detectionList);
 
         /* Récupérer la taille de l'image et l'image. */
         uint32_t size;
@@ -156,7 +162,13 @@ int main(int argc, char *argv[]) {
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
 
+        for (int i = 0; i < (int) (coordinateListSize / (2 * sizeof(uint32_t))); i++) {
+            printf("Détection de : %s à (%d, %d).\n", detectionList[i], coordinateList[2 * i], coordinateList[2 * i + 1]);
+        }
+
+        free(detectionList);
         free(receivedImage);
+        free(coordinateList);
     }
 
     CLOSE_SOCKET(clientSocket);

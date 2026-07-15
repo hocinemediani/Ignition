@@ -20,25 +20,20 @@ int getHashValue(char *key, struct hashMap *map) {
 
 
 void insertNode(struct node *newNode, struct hashMap *map) {
-    struct hashMap *correctHashMap = map;
     if ((float) map->size / map->capacity > 0.75) {
-        correctHashMap = rehashTable(map);
+        rehashTable(map);
     }
 
     int hashValue = getHashValue(newNode->key, map);
 
-    struct node *toExplore = correctHashMap->hashTable[hashValue];
+    struct node *toExplore = map->hashTable[hashValue];
     if (toExplore == NULL) {
-        correctHashMap->hashTable[hashValue] = newNode;
+        map->hashTable[hashValue] = newNode;
         goto end_add_node;
     }
 
     struct node *previous;
     do {
-        if (strcmp(toExplore->key, newNode->key) == 0) {
-            toExplore->value = newNode->value;
-            return;
-        }
         previous = toExplore;
         toExplore = toExplore->next;
     } while (toExplore != NULL);
@@ -50,10 +45,37 @@ void insertNode(struct node *newNode, struct hashMap *map) {
 }
 
 
-struct hashMap *rehashTable(struct hashMap *map) {
+void insertNodeInternal(struct node *newNode, struct hashMap *map, struct node **hashTable) {
+    int hashValue = getHashValue(newNode->key, map);
+
+    struct node *toExplore = hashTable[hashValue];
+    if (toExplore == NULL) {
+        hashTable[hashValue] = newNode;
+        return;
+    }
+
+    struct node *previous;
+    do {
+        if (strcmp(toExplore->key, newNode->key) == 0) {
+            toExplore->x = newNode->x;
+            toExplore->y = newNode->y;
+            return;
+        }
+        previous = toExplore;
+        toExplore = toExplore->next;
+    } while (toExplore != NULL);
+
+    if (previous != newNode) previous->next = newNode;
+}
+
+
+void rehashTable(struct hashMap *map) {
     printf("\nRehashage nécessaire, utilisation actuelle : %d/%d\n", map->size, map->capacity);
 
-    struct hashMap *newHashMap = initializeHashMap(map->capacity * 2);
+    struct node **newHashTable = malloc(map->capacity * 2 * sizeof(struct node *));
+    memset(newHashTable, 0, map->capacity * 2 * sizeof(struct node *));
+
+    map->capacity = map->capacity * 2;
 
     for (int i = 0; i < map->capacity / 2; i++) {
         struct node *toExplore = map->hashTable[i];
@@ -61,55 +83,88 @@ struct hashMap *rehashTable(struct hashMap *map) {
         while (toExplore != NULL) {
             struct node *nextNode = toExplore->next;
             toExplore->next = NULL;
-            insertNode(toExplore, newHashMap);
+            insertNodeInternal(toExplore, map, newHashTable);
             toExplore = nextNode;
         }
     }
     
     free(map->hashTable);
-    printf("Rehashage terminé avec succès, nouvelle utilisation : %d/%d\n", newHashMap->size, newHashMap->capacity);
-    return newHashMap;
+    map->hashTable = newHashTable;
+    printf("Rehashage terminé avec succès, nouvelle utilisation : %d/%d\n", map->size, map->capacity);
 }
 
 
-void updateNode(char *key, int value, struct hashMap *map) {
+void updateNode(char *key, int oldX, int oldY, int x, int y, struct hashMap *map) {
     int hashValue = getHashValue(key, map);
     if (map->hashTable[hashValue] == NULL) {
-        createNode(key, value, map);
+        createNode(key, x, y, map);
     } else {
         struct node *toExplore = map->hashTable[hashValue];
 
-        while (strcmp(toExplore->key, key) != 0) {
+        while (strcmp(toExplore->key, key) != 0 || toExplore->x != oldX || toExplore->y != oldY) {
             toExplore = toExplore->next;
             if (toExplore == NULL) return;
         }
 
-        toExplore->value += value;
+        toExplore->x = x;
+        toExplore->y = y;
     }
 }
 
 
-void createNode(char *key, int value, struct hashMap *map) {
+void createNode(char *key, int x, int y, struct hashMap *map) {
     struct node *newNode = malloc(sizeof(struct node));
     newNode->key = strdup(key);
-    newNode->value = value;
+    newNode->x = x;
+    newNode->y = y;
     newNode->next = NULL;
+    newNode->isSeen = 0;
     insertNode(newNode, map);
 }
 
 
-int getValue(char *key, struct hashMap *map) {
+int nodeExists(char *key, struct hashMap *map) {
     int hashValue = getHashValue(key, map);
     struct node *toExplore = map->hashTable[hashValue];
 
-    if (toExplore == NULL) return -1;
+    if (toExplore == NULL) return 0;
 
     while (strcmp(toExplore->key, key) != 0) {
         toExplore = toExplore->next;
-        if (toExplore == NULL) return -1;
+        if (toExplore == NULL) return 0;
     }
 
-    return toExplore->value;
+    return 1;
+}
+
+
+int getX(char *key, struct hashMap *map) {
+    int hashValue = getHashValue(key, map);
+    struct node *toExplore = map->hashTable[hashValue];
+
+    if (toExplore == NULL) return ERROR_COORDINATE;
+
+    while (strcmp(toExplore->key, key) != 0) {
+        toExplore = toExplore->next;
+        if (toExplore == NULL) return ERROR_COORDINATE;
+    }
+
+    return toExplore->x;
+}
+
+
+int getY(char *key, struct hashMap *map) {
+    int hashValue = getHashValue(key, map);
+    struct node *toExplore = map->hashTable[hashValue];
+
+    if (toExplore == NULL) return ERROR_COORDINATE;
+
+    while (strcmp(toExplore->key, key) != 0) {
+        toExplore = toExplore->next;
+        if (toExplore == NULL) return ERROR_COORDINATE;
+    }
+
+    return toExplore->y;
 }
 
 
@@ -119,7 +174,7 @@ void printHashMap(struct hashMap *map) {
     for (int i = 0; i < map->capacity; i++) {
         struct node *toExplore = map->hashTable[i];
         while (toExplore != NULL) {
-            printf("{Hash: %d, Key: %s, Value: %d}\n", getHashValue(toExplore->key, map), toExplore->key, toExplore->value);
+            printf("{Hash: %d, Key: %s, X: %d, Y: %d}\n", getHashValue(toExplore->key, map), toExplore->key, toExplore->x, toExplore->y);
             toExplore = toExplore->next;
         } 
     }
@@ -151,7 +206,8 @@ int compareHashMap(struct hashMap *map1, struct hashMap *map2) {
 
         while (toExplore1 != NULL && toExplore2 != NULL) {
             if (strcmp(toExplore1->key, toExplore2->key) != 0) return -1;
-            if (toExplore1->value != toExplore2->value) return -1;
+            if (abs(toExplore1->x - toExplore2->x) > PIXEL_THRESHOLD) return -1;
+            if (abs(toExplore1->y - toExplore2->y) > PIXEL_THRESHOLD) return -1;
             toExplore1 = toExplore1->next;
             toExplore2 = toExplore2->next;
         }

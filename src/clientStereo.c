@@ -8,7 +8,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdio.h>
-#include <signal.h>
 #include "hashmap.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -65,6 +64,9 @@ struct threadContext {
 
 Uint32 eventID;
 
+int hashMapUpdated = 0;
+pthread_mutex_t updatedMutex;
+
 
 int receiveMessage(socket_t clientSocketFd, void *messageToReceive, int size) {
     int receivedBytes = 0;
@@ -117,15 +119,22 @@ void* receivingThreadMain(void *_arg) {
     event.user.code = (Sint32) context->workerIndex;
 
     while (1) {
-        /* Récupération des détections. */
+        /* Récupération des x_min et y_min. */
+        int coordinateSize;
+        if (receiveMessage(clientSocket, &coordinateSize, sizeof(coordinateSize)) == -1) break;
+        int coordinateListSize = ntohl(coordinateSize);
 
+        int *coordinateList = (int *) malloc(coordinateListSize);
+        if ((receiveMessage(clientSocket, coordinateList, coordinateListSize)) == -1) break;
+
+        /* Récupération des détections. */
         int listSize;
         if (receiveMessage(clientSocket, &listSize, sizeof(listSize)) == -1) break;
         int detectionSize = ntohl(listSize);
         
         context->numBoxes = detectionSize / 64;
 
-        void* detectionList = malloc(detectionSize);
+        char (*detectionList)[64] = (char(*)[64]) malloc(detectionSize);
         if (detectionList == NULL) exit(EXIT_FAILURE);
         if (receiveMessage(clientSocket, detectionList, detectionSize) == -1) break;
 
@@ -166,11 +175,22 @@ void* receivingThreadMain(void *_arg) {
             context->pixelArray = pixelArray;
 
             if (context->detectionList != NULL) free(context->detectionList);
-            context->detectionList = ((char(*)[64]) detectionList);
+            context->detectionList = detectionList;
 
             for (int i = 0; i < context->numBoxes; i++) {
-                updateNode(context->detectionList[i], 1, context->hashMap);
+                createNode(context->detectionList[i], coordinateList[2 * i], coordinateList[2 * i + 1], context->hashMap);
             }
+
+            if (nodeExists("tv", context->hashMap)) {
+                int offsetX = getX("tv", context->hashMap);
+                int offsetY = getY("tv", context->hashMap);
+                for (int i = 0; i < context->numBoxes; i++) {
+                    updateNode(context->detectionList[i], coordinateList[2 * i], coordinateList[2 * i + 1], coordinateList[2 * i] - offsetX, coordinateList[2 * i + 1] - offsetY, context->hashMap);
+                }
+            }
+            pthread_mutex_lock(&updatedMutex);
+            hashMapUpdated = hashMapUpdated | 1 << context->workerIndex;
+            pthread_mutex_unlock(&updatedMutex);
 
             context->imageWidth = imageWidth;
             context->canGetImage = 1;
@@ -181,6 +201,7 @@ void* receivingThreadMain(void *_arg) {
             stbi_image_free(pixelArray);
         }
         
+        free(coordinateList);
         free(receivedImage);
     }
 
@@ -199,8 +220,8 @@ void initializeContext(struct threadContext *context, SDL_Texture *texture, SDL_
     context->renderer = renderer;
     context->detectionList = NULL;
     context->workerIndex = workerIndex;
-    context->hashMap = initializeHashMap(128);
-    context->previousHashMap = initializeHashMap(128);
+    context->hashMap = initializeHashMap(32);
+    context->previousHashMap = initializeHashMap(32);
 }
 
 
@@ -239,20 +260,39 @@ void printDetections(struct threadContext *context1, struct threadContext *conte
         struct node *toExplore = context1->hashMap->hashTable[i];
 
         while (toExplore != NULL) {
-            int value1 = toExplore->value;
-            int value2 = getValue(toExplore->key, context2->hashMap);
+            int x1 = toExplore->x;
+            int y1 = toExplore->y;
 
-            if (value1 == -1) {
+            if (x1 == ERROR_COORDINATE || y1 == ERROR_COORDINATE) {
                 toExplore = toExplore->next;
                 continue;
             }
+            
+            float deltaX = 640;
+            float deltaY = 640;
+            
+            struct node *camNode = context2->hashMap->hashTable[getHashValue(toExplore->key, context2->hashMap)];
+            while (camNode != NULL) {
+                if (strcmp(camNode->key, toExplore->key) != 0 || camNode->isSeen == 1) {
+                    camNode = camNode->next;
+                    continue;
+                }
 
-            if (value2 == -1) {
-                value2 = 0;
-            } else {
-                printf("Détection avec haut degré de confiance de %d %s.\n", value1 < value2 ? value1 : value2, toExplore->key);
+                deltaX = ((float) x1 - camNode->x);
+                deltaY = ((float) y1 - camNode->y);
+                camNode->isSeen = 1;
+                break;
             }
-            if (value1 != value2) printf("Détection avec faible degré de confiance de %d %s.\n", abs(value1 - value2), toExplore->key);
+
+            deltaX = deltaX > 0 ? deltaX : -deltaX;
+            deltaY = deltaY > 0 ? deltaY : -deltaY;
+
+            if (deltaX > 0.15 * 640 || deltaY > 0.15 * 640) {
+                printf("Détection par orin-nano-%d de %s à (%d, %d).\n", context1->workerIndex, toExplore->key, x1, y1);
+                if (camNode != NULL) printf("Détection par orin-nano-%d de %s à (%d, %d).\n", context2->workerIndex, toExplore->key, camNode->x, camNode->y);
+            } else {
+                printf("Détection mutualisée de %s à (%d, %d).\n", toExplore->key, x1, y1);
+            }
 
             toExplore = toExplore->next;
         }
@@ -264,11 +304,7 @@ void printDetections(struct threadContext *context1, struct threadContext *conte
         struct node *toExplore = context2->hashMap->hashTable[i];
 
         while (toExplore != NULL) {
-            int value1 = getValue(toExplore->key, context1->hashMap);
-            int value2 = toExplore->value;
-
-            if (value1 == -1) printf("Détection avec faible degré de confiance de %d %s.\n", value2, toExplore->key);
-
+            if (toExplore->isSeen == 0) printf("Détection par orin-nano-%d de %s à (%d, %d).\n", context2->workerIndex, toExplore->key,toExplore->x, toExplore->y);
             toExplore = toExplore->next;
         }
     }
@@ -297,6 +333,7 @@ int main(int argc, char *argv[]) {
     /* Initialisation des fenêtres de prévisualisation. */
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
         printf("ERREUR : SDL n'a pas pu être initialisé.\n");
+        exit(EXIT_FAILURE);
     }
     
     /* Récupération de la taille de l'écran. */
@@ -330,6 +367,7 @@ int main(int argc, char *argv[]) {
 
     pthread_mutex_init(&firstThreadMutex, NULL);
     pthread_mutex_init(&secondThreadMutex, NULL);
+    pthread_mutex_init(&updatedMutex, NULL);
 
     /* Récupération d'un ID d'event valide. */
     eventID = SDL_RegisterEvents(1);
@@ -362,11 +400,24 @@ int main(int argc, char *argv[]) {
     while (1) {
         /* Afficher l'image à l'écran avec SDL. */
         while (SDL_WaitEvent(&event)) {
-            if (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE) {
+            if (event.type == SDL_QUIT || (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE)) {
                 exit(EXIT_SUCCESS);
             }
+
+            int shouldPrint = 0;
+            pthread_mutex_lock(&updatedMutex);
+            if (hashMapUpdated == (0 | 1 << workerIndex1 | 1 << workerIndex2)) {
+                shouldPrint = 1;
+                hashMapUpdated = 0;
+            }
+            pthread_mutex_unlock(&updatedMutex);
+
+            if (shouldPrint) {
+                printDetections(&firstThreadContext, &secondThreadContext);
+                shouldPrint = 0;
+            }
+
             if (event.type == eventID) {
-                // printDetections(&firstThreadContext, &secondThreadContext);
 
                 if (event.user.code == (Sint32) workerIndex1) {
                     renderImage(&firstThreadContext);

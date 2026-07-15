@@ -164,6 +164,8 @@ void* receivingMain(void *_arg) {
         endProgram(NUM_BUFFERS, EXIT_FAILURE);
     }
 
+    setsockopt(workerSocket, SOL_SOCKET, SO_REUSEADDR, NULL, 0);
+
     struct sockaddr_in workerAddress;
     memset(&workerAddress, 0, sizeof(workerAddress));
     workerAddress.sin_addr.s_addr = INADDR_ANY;
@@ -221,20 +223,11 @@ void* receivingMain(void *_arg) {
 }
 
 
-void sendDetections(void *detectionList, int size) {
+void sendData(void *data, uint32_t size) {
     int networkSize = htonl(size);
     for (int i = 0; i < connectedClients; i++) {
         sendMessage(socketTable[i], &networkSize, sizeof(networkSize));
-        sendMessage(socketTable[i], detectionList, size);
-    }
-}
-
-
-void sendImage(void *image, uint32_t imageSize) {
-    uint32_t size = htonl(imageSize);
-    for (int i = 0; i < connectedClients; i++) {
-        sendMessage(socketTable[i], &size, sizeof(imageSize));
-        sendMessage(socketTable[i], image, imageSize);
+        sendMessage(socketTable[i], data, size);
     }
 }
 

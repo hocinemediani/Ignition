@@ -2,9 +2,14 @@
 #include <string.h>
 #include <stdlib.h>
 
+#define ERROR_COORDINATE 800
+#define PIXEL_THRESHOLD 30
+
 struct node {
     char *key;
-    int value;
+    int x;
+    int y;
+    int isSeen;
     struct node *next;
 };
 
@@ -20,13 +25,19 @@ int getHashValue(char *key, struct hashMap *map);
 
 void insertNode(struct node *newNode, struct hashMap *map);
 
-struct hashMap *rehashTable(struct hashMap *map);
+void insertNodeInternal(struct node *newNode, struct hashMap *map, struct node **hashTable);
 
-void updateNode(char *key, int value, struct hashMap *map);
+void rehashTable(struct hashMap *map);
 
-void createNode(char *key, int value, struct hashMap *map);
+void updateNode(char *key, int oldX, int oldY, int x, int y, struct hashMap *map);
 
-int getValue(char *key, struct hashMap *map);
+void createNode(char *key, int x, int y, struct hashMap *map);
+
+int nodeExists(char *key, struct hashMap *map);
+
+int getX(char *key, struct hashMap *map);
+
+int getY(char *key, struct hashMap *map);
 
 void printHashMap(struct hashMap *map);
 

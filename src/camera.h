@@ -53,8 +53,6 @@ void *threadMain(void *_arg);
 
 void* receivingMain(void *_arg);
 
-void sendDetections(void *detectionList, int size);
-
-void sendImage(void *image, uint32_t imageSize);
+void sendData(void *data, uint32_t size);
 
 void initializeCamera(int cameraWidth, int cameraHeight, int cameraIndex);

@@ -19,6 +19,7 @@ class PythonMessage(ctypes.Structure):
         ("bufferIndex", ctypes.c_int)
     ]
 
+# Création de la structure que l'on recevra en retour de l'appel à getCameraInfo.
 class CameraInfo(ctypes.Structure):
     _fields_ = [
         ("width", ctypes.c_int),
@@ -43,13 +44,9 @@ CLASS_COLOR = np.random.randint(0, 256, size=(80, 3), dtype=int)
 
 # Configuration des différentes fonctions qui seront appelées.
 
-## void sendDetections(void *detectionList, int size);
-lib.sendDetections.argtypes = [ctypes.c_void_p, ctypes.c_int]
-lib.sendDetections.restype = None
-
-## void sendImage(void *image, uint32_t imageSize);
-lib.sendImage.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-lib.sendImage.restype = None
+## void sendData(void *data, uint32_t size);
+lib.sendData.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+lib.sendData.restype = None
 
 ## void loadEngine(char *modelPath, int needsRebuild);
 lib.loadEngine.argtypes = [ctypes.c_char_p, ctypes.c_int]
@@ -304,26 +301,37 @@ while (True):
     ## Récupération des boîtes et des prédictions / scores de confiance.
     numBoxes = buffers[1].item()
 
+    coordinateElem = ctypes.c_uint32
+    coordinateBufferType = coordinateElem * (4 * numBoxes)
+    contiguousCoordinateBuffer = coordinateBufferType()
+
     stringElem = ctypes.c_char * 64
-    bufferType = stringElem * numBoxes
-    contiguousBuffer = bufferType()
+    detectionBufferType = stringElem * numBoxes
+    contiguousDetectionBuffer = detectionBufferType()
 
     for i in range (0, numBoxes):
         classNumber = int(buffers[4][0][i])
+
         boxColor = tuple(CLASS_COLOR[classNumber].tolist())
         coordinates = [int(buffers[2][0][i][j]) for j in range(0, 4)]
-        detectionString = COCO_CLASSES[classNumber] + " : " + str(round(buffers[3][0][i], 3)) + "%"
-        contiguousBuffer[i].value = COCO_CLASSES[classNumber].encode("utf-8")
         cv2.rectangle(fullRgbImage, (coordinates[0], coordinates[1]), (coordinates[2], coordinates[3]), boxColor, 5)
+
+        detectionString = COCO_CLASSES[classNumber] + " : " + str(round(buffers[3][0][i], 3)) + "%"
         cv2.putText(fullRgbImage, detectionString, (coordinates[0], coordinates[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, boxColor, 2)
+
+        contiguousCoordinateBuffer[4 * i] = coordinates[0]
+        contiguousCoordinateBuffer[4 * i + 1] = coordinates[1]
+        contiguousCoordinateBuffer[4 * i + 2] = coordinates[2] - coordinates[0]
+        contiguousCoordinateBuffer[4 * i + 3] = coordinates[3] - coordinates[1]
+        contiguousDetectionBuffer[i].value = COCO_CLASSES[classNumber].encode("utf-8")
+        
 
     ## Affichage de l'image à l'écran / envoi de l'image.
     (unused, jpegArray) = cv2.imencode(".jpg", cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
-    imageToSend = jpegArray.ctypes.data_as(ctypes.c_void_p)
-    imageSize = jpegArray.size
 
-    lib.sendDetections(ctypes.addressof(contiguousBuffer), ctypes.sizeof(contiguousBuffer))
-    lib.sendImage(imageToSend, imageSize)
+    lib.sendData(ctypes.addressof(contiguousCoordinateBuffer), ctypes.sizeof(contiguousCoordinateBuffer))
+    lib.sendData(ctypes.addressof(contiguousDetectionBuffer), ctypes.sizeof(contiguousDetectionBuffer))
+    lib.sendData(jpegArray.ctypes.data_as(ctypes.c_void_p), jpegArray.size)
 
     end = time.time()
     #cv2.imshow(windowName, cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
