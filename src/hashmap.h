@@ -9,6 +9,8 @@ struct node {
     char *key;
     int x;
     int y;
+    int width;
+    int height;
     int isSeen;
     struct node *next;
 };
@@ -29,15 +31,19 @@ void insertNodeInternal(struct node *newNode, struct hashMap *map, struct node *
 
 void rehashTable(struct hashMap *map);
 
-void updateNode(char *key, int oldX, int oldY, int x, int y, struct hashMap *map);
+void updateNode(char *key, int oldX, int oldY, int x, int y, int width, int height, struct hashMap *map);
 
-void createNode(char *key, int x, int y, struct hashMap *map);
+void createNode(char *key, int x, int y, int width, int height, struct hashMap *map);
 
 int nodeExists(char *key, struct hashMap *map);
 
 int getX(char *key, struct hashMap *map);
 
 int getY(char *key, struct hashMap *map);
+
+int getWidth(char *key, struct hashMap *map);
+
+int getHeight(char *key, struct hashMap *map);
 
 void printHashMap(struct hashMap *map);
 

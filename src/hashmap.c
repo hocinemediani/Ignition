@@ -94,10 +94,10 @@ void rehashTable(struct hashMap *map) {
 }
 
 
-void updateNode(char *key, int oldX, int oldY, int x, int y, struct hashMap *map) {
+void updateNode(char *key, int oldX, int oldY, int x, int y, int width, int height, struct hashMap *map) {
     int hashValue = getHashValue(key, map);
     if (map->hashTable[hashValue] == NULL) {
-        createNode(key, x, y, map);
+        createNode(key, x, y, width, height, map);
     } else {
         struct node *toExplore = map->hashTable[hashValue];
 
@@ -108,17 +108,21 @@ void updateNode(char *key, int oldX, int oldY, int x, int y, struct hashMap *map
 
         toExplore->x = x;
         toExplore->y = y;
+        toExplore->width = width;
+        toExplore->height = height;
     }
 }
 
 
-void createNode(char *key, int x, int y, struct hashMap *map) {
+void createNode(char *key, int x, int y, int width, int height, struct hashMap *map) {
     struct node *newNode = malloc(sizeof(struct node));
     newNode->key = strdup(key);
     newNode->x = x;
     newNode->y = y;
     newNode->next = NULL;
     newNode->isSeen = 0;
+    newNode->width = width;
+    newNode->height = height;
     insertNode(newNode, map);
 }
 
@@ -165,6 +169,36 @@ int getY(char *key, struct hashMap *map) {
     }
 
     return toExplore->y;
+}
+
+
+int getWidth(char *key, struct hashMap *map) {
+    int hashValue = getHashValue(key, map);
+    struct node *toExplore = map->hashTable[hashValue];
+
+    if (toExplore == NULL) return ERROR_COORDINATE;
+
+    while (strcmp(toExplore->key, key) != 0) {
+        toExplore = toExplore->next;
+        if (toExplore == NULL) return ERROR_COORDINATE;
+    }
+
+    return toExplore->width;
+}
+
+
+int getHeight(char *key, struct hashMap *map) {
+    int hashValue = getHashValue(key, map);
+    struct node *toExplore = map->hashTable[hashValue];
+
+    if (toExplore == NULL) return ERROR_COORDINATE;
+
+    while (strcmp(toExplore->key, key) != 0) {
+        toExplore = toExplore->next;
+        if (toExplore == NULL) return ERROR_COORDINATE;
+    }
+
+    return toExplore->height;
 }
 
 

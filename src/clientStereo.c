@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdio.h>
+#include <math.h>
 #include "hashmap.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -50,6 +51,7 @@
 
 struct threadContext {
     int numBoxes;
+    int index;
     int imageWidth;
     int workerIndex;
     int canGetImage;
@@ -59,13 +61,46 @@ struct threadContext {
     struct hashMap *hashMap;
     struct hashMap *previousHashMap;
     pthread_mutex_t *imageMutex;
+    pthread_mutex_t *firstImageMutex;
+    pthread_cond_t *firstImageCondition;
+    int firstImageReady;
     char(*detectionList)[64];
 };
 
 Uint32 eventID;
 
+int epipolarCalibration = 0;
+long double F[3][3];
+
+pthread_mutex_t imageMutex1;
+pthread_mutex_t imageMutex2;
+pthread_cond_t imageCondition1;
+pthread_cond_t imageCondition2;
+
 int hashMapUpdated = 0;
 pthread_mutex_t updatedMutex;
+
+
+int writeToFile(int imageSize, int imageFd, void *receivedImage, char *imageName) {
+    int writtenBytes = 0;
+    int bytesToWrite = imageSize;
+    while (writtenBytes < (int) (imageSize)) {
+        int bytesWritten = write(imageFd, receivedImage + writtenBytes, bytesToWrite);
+        if (bytesWritten == -1) {
+            printf("ERREUR : L'écriture du fichier %s s'est mal déroulée", imageName);
+            epipolarCalibration = 0;
+            return -1;
+        }
+        if (bytesWritten == 0) {
+            break;
+        }
+        writtenBytes += bytesWritten;
+        bytesToWrite -= bytesWritten;
+    }
+    printf("Ecriture du fichier %s terminée.\n", imageName);
+    close(imageFd);
+    return 0;
+}
 
 
 int receiveMessage(socket_t clientSocketFd, void *messageToReceive, int size) {
@@ -85,6 +120,8 @@ int receiveMessage(socket_t clientSocketFd, void *messageToReceive, int size) {
 
 
 void* receivingThreadMain(void *_arg) {
+    int getFirstImage = 1;
+
     /* Récupération du contexte utile. */
     struct threadContext *context = (struct threadContext *) _arg;
 
@@ -107,7 +144,7 @@ void* receivingThreadMain(void *_arg) {
     workerAddress.sin_port = htons(9988);
 
     if (connect(clientSocket, (const struct sockaddr *) &workerAddress, sizeof(workerAddress)) == -1) {
-        printf("ERREUR : La connexion est impossible à la carte d'IP : %s", workerIp);
+        printf("ERREUR : La connexion est impossible à la carte d'IP : %s\n", workerIp);
         exit(EXIT_FAILURE);
     }
     printf("Connexion à la carte orin-nano-%d réussie avec succès.\n", context->workerIndex);
@@ -158,6 +195,29 @@ void* receivingThreadMain(void *_arg) {
             break;
         }
 
+        /* Création du fichier pour l'image de calibration. */
+        pthread_mutex_lock(context->firstImageMutex);
+        if (epipolarCalibration == 1 && getFirstImage == 1) {
+            getFirstImage = 0;
+
+            char imageName[64];
+            snprintf(imageName, sizeof(imageName), "./calibration/calibrationImage%d.jpg", context->index);
+            int imageFd = open(imageName, O_CREAT | O_RDWR | O_TRUNC |O_BINARY, 0666);
+
+            if (imageFd == -1) {
+                epipolarCalibration = 0;
+                goto end;
+            }
+
+            if (writeToFile(imageSize, imageFd, receivedImage, imageName) == -1) goto end;
+            context->firstImageReady = 1;
+
+        }
+
+        end:
+        pthread_cond_signal(context->firstImageCondition);
+        pthread_mutex_unlock(context->firstImageMutex);
+
         int imageWidth;
         int imageHeight;
         int comp;
@@ -178,14 +238,14 @@ void* receivingThreadMain(void *_arg) {
             context->detectionList = detectionList;
 
             for (int i = 0; i < context->numBoxes; i++) {
-                createNode(context->detectionList[i], coordinateList[2 * i], coordinateList[2 * i + 1], context->hashMap);
+                createNode(context->detectionList[i], coordinateList[4 * i], coordinateList[4 * i + 1], coordinateList[4 * i + 2], coordinateList[4 * i + 3], context->hashMap);
             }
 
-            if (nodeExists("tv", context->hashMap)) {
+            if (nodeExists("tv", context->hashMap) && epipolarCalibration == 0) {
                 int offsetX = getX("tv", context->hashMap);
                 int offsetY = getY("tv", context->hashMap);
                 for (int i = 0; i < context->numBoxes; i++) {
-                    updateNode(context->detectionList[i], coordinateList[2 * i], coordinateList[2 * i + 1], coordinateList[2 * i] - offsetX, coordinateList[2 * i + 1] - offsetY, context->hashMap);
+                    updateNode(context->detectionList[i], coordinateList[4 * i], coordinateList[4 * i + 1], coordinateList[4 * i] - offsetX, coordinateList[4 * i + 1] - offsetY, coordinateList[4 * i + 2], coordinateList[4 * i + 3], context->hashMap);
                 }
             }
             pthread_mutex_lock(&updatedMutex);
@@ -211,12 +271,16 @@ void* receivingThreadMain(void *_arg) {
 }
 
 
-void initializeContext(struct threadContext *context, SDL_Texture *texture, SDL_Renderer *renderer, int workerIndex, pthread_mutex_t *mutex) {
+void initializeContext(struct threadContext *context, SDL_Texture *texture, SDL_Renderer *renderer, int index, int workerIndex, pthread_mutex_t *mutex, pthread_mutex_t *firstMutex, pthread_cond_t *firstCondition) {
     context->numBoxes = 0;
     context->canGetImage = 0;
+    context->index = index;
+    context->firstImageReady = 0;
     context->pixelArray = NULL;
     context->texture = texture;
     context->imageMutex = mutex;
+    context->firstImageMutex = firstMutex;
+    context->firstImageCondition = firstCondition;
     context->renderer = renderer;
     context->detectionList = NULL;
     context->workerIndex = workerIndex;
@@ -267,10 +331,21 @@ void printDetections(struct threadContext *context1, struct threadContext *conte
                 toExplore = toExplore->next;
                 continue;
             }
-            
-            float deltaX = 640;
-            float deltaY = 640;
-            
+
+            int matchFound = 0;
+
+            long double a = 1;
+            long double b = 1;
+            long double c = 1;
+            long double norm = 1;
+
+            if (epipolarCalibration == 1) {
+                a = F[0][0] * x1 + F[0][1] * y1 + F[0][2];
+                b = F[1][0] * x1 + F[1][1] * y1 + F[1][2];
+                c = F[2][0] * x1 + F[2][1] * y1 + F[2][2];
+                norm = sqrtf(a * a + b * b);
+            }
+
             struct node *camNode = context2->hashMap->hashTable[getHashValue(toExplore->key, context2->hashMap)];
             while (camNode != NULL) {
                 if (strcmp(camNode->key, toExplore->key) != 0 || camNode->isSeen == 1) {
@@ -278,22 +353,41 @@ void printDetections(struct threadContext *context1, struct threadContext *conte
                     continue;
                 }
 
-                deltaX = ((float) x1 - camNode->x);
-                deltaY = ((float) y1 - camNode->y);
-                camNode->isSeen = 1;
-                break;
+                if (epipolarCalibration == 1) {
+                    long double distance = fabsl(a * camNode->x + b * camNode->y + c) / norm;
+
+                    if (distance <= 40.0) {
+                        matchFound = 1;
+                        camNode->isSeen = 1;
+                        break;
+                    }
+                } else {
+                    float deltaX = 640;
+                    float deltaY = 640;
+
+                    deltaX = ((float) x1 - camNode->x);
+                    deltaY = ((float) y1 - camNode->y);
+
+                    deltaX = deltaX > 0 ? deltaX : -deltaX;
+                    deltaY = deltaY > 0 ? deltaY : -deltaY;
+
+                    if (deltaX <= 0.15 * 640 && deltaY <= 0.15 * 640) {
+                        matchFound = 1;
+                        camNode->isSeen = 1;
+                        break;
+                    }
+                }
+                
+                camNode = camNode->next;
+
             }
 
-            deltaX = deltaX > 0 ? deltaX : -deltaX;
-            deltaY = deltaY > 0 ? deltaY : -deltaY;
-
-            if (deltaX > 0.15 * 640 || deltaY > 0.15 * 640) {
-                printf("Détection par orin-nano-%d de %s à (%d, %d).\n", context1->workerIndex, toExplore->key, x1, y1);
-                if (camNode != NULL) printf("Détection par orin-nano-%d de %s à (%d, %d).\n", context2->workerIndex, toExplore->key, camNode->x, camNode->y);
-            } else {
+            if (matchFound) {
                 printf("Détection mutualisée de %s à (%d, %d).\n", toExplore->key, x1, y1);
+            } else {
+                printf("Détection par orin-nano-%d de %s à (%d, %d).\n", context1->workerIndex, toExplore->key, x1, y1);
             }
-
+            
             toExplore = toExplore->next;
         }
     }
@@ -321,7 +415,11 @@ int main(int argc, char *argv[]) {
     init_connection();
 
     /* Vérification de l'input utilisateur. */
-    if (argc != 3) {
+    if (argc == 4) {
+        for (int i = 0; i < argc; i++) {
+            if (strcmp(argv[i], "--epipolar") == 0) epipolarCalibration = 1;
+        }
+    } else if (argc != 3) {
         printf("ERREUR : Veuillez renseigner l'index des cartes auxquelles vous souhaitez vous connecter.\n");
         exit(EXIT_FAILURE);
     }
@@ -368,13 +466,17 @@ int main(int argc, char *argv[]) {
     pthread_mutex_init(&firstThreadMutex, NULL);
     pthread_mutex_init(&secondThreadMutex, NULL);
     pthread_mutex_init(&updatedMutex, NULL);
+    pthread_mutex_init(&imageMutex1, NULL);
+    pthread_mutex_init(&imageMutex2, NULL);
+    pthread_cond_init(&imageCondition1, NULL);
+    pthread_cond_init(&imageCondition2, NULL);
 
     /* Récupération d'un ID d'event valide. */
     eventID = SDL_RegisterEvents(1);
 
     /* Création du premier thread d'écoute. */
     struct threadContext firstThreadContext;
-    initializeContext(&firstThreadContext, texture, renderer, workerIndex1, &firstThreadMutex);
+    initializeContext(&firstThreadContext, texture, renderer, 0, workerIndex1, &firstThreadMutex, &imageMutex1, &imageCondition1);
 
     pthread_t firstReceivingThread;
     if (pthread_create(&firstReceivingThread, NULL, receivingThreadMain, &firstThreadContext) != 0) {
@@ -386,7 +488,7 @@ int main(int argc, char *argv[]) {
 
     /* Création du second thread d'écoute. */
     struct threadContext secondThreadContext;
-    initializeContext(&secondThreadContext, secondTexture, secondRenderer, workerIndex2, &secondThreadMutex);
+    initializeContext(&secondThreadContext, secondTexture, secondRenderer, 1, workerIndex2, &secondThreadMutex, &imageMutex2, &imageCondition2);
 
     pthread_t secondReceivingThread;
     if (pthread_create(&secondReceivingThread, NULL, receivingThreadMain, &secondThreadContext) != 0) {
@@ -396,8 +498,89 @@ int main(int argc, char *argv[]) {
         pthread_detach(secondReceivingThread);
     }
 
+    
+    if (epipolarCalibration == 1) {
+        /* Boucles d'attente des signaux des 2 images initiales. */
+        pthread_mutex_lock(&imageMutex1);
+        while(firstThreadContext.firstImageReady != 1) {
+            pthread_cond_wait(&imageCondition1, &imageMutex1);
+        }
+        pthread_mutex_unlock(&imageMutex1);
+
+        pthread_mutex_lock(&imageMutex2);
+        while(secondThreadContext.firstImageReady != 1) {
+            pthread_cond_wait(&imageCondition2, &imageMutex2);
+        }
+        pthread_mutex_unlock(&imageMutex2);
+
+        /* Structure Windows nécessaire pour créer un processus. */
+        STARTUPINFO si;
+        PROCESS_INFORMATION pi;
+
+        /* Initialisation des structures. */
+        ZeroMemory(&si, sizeof(si));
+        si.cb = sizeof(si);
+        ZeroMemory(&pi, sizeof(pi));
+
+        char cmdLine[] = "python epipolar.py"; 
+
+        /* Création du processus fils. */
+        BOOL success = CreateProcess(
+            NULL,           // Application name
+            cmdLine,        // Ligne de commande complète
+            NULL,           // Sécurité du processus
+            NULL,           // Sécurité du thread
+            FALSE,          // Héritage des handles
+            0,              // Drapeaux de création
+            NULL,           // Environnement
+            NULL,           // Répertoire de travail actuel
+            &si,            // Pointeur vers STARTUPINFO
+            &pi             // Pointeur vers PROCESS_INFORMATION
+        );
+
+        if (!success) {
+            printf("ERREUR : Le CreateProcess n'a pas pu se faire. Code d'erreur : %lu\n", GetLastError());
+            epipolarCalibration = 0;
+        } else {
+            /* Dans le père, on attend la fin de l'exécution du fils. */
+            WaitForSingleObject(pi.hProcess, INFINITE);
+
+            DWORD exitCode;
+            if (!GetExitCodeProcess(pi.hProcess, &exitCode) || exitCode != 0) {
+                printf("ERREUR : Le lancement s'est mal déroulé.\n");
+                epipolarCalibration = 0;
+            } else {
+                printf("Calibration terminée avec succès, récupération de la matrice fondamentale.\n");
+
+                int resultsFd;
+                if ((resultsFd = open("./calibration/results.txt", O_RDONLY)) == -1) {
+                    printf("ERREUR : Impossible d'ouvrir le fichier contenant la matrice fondamentale.\n");
+                    epipolarCalibration = 0;
+                    close(resultsFd);
+                    goto end_epipolar;
+                }
+
+                FILE *resultFile = fdopen(resultsFd, "r");
+                for (int i = 0; i < 3; i++) {
+                    for (int j = 0; j < 3; j++) {
+                        long double coefficient;
+                        fscanf(resultFile, "%Lf\n", &coefficient);
+                        F[i][j] = coefficient;
+                    }
+                }
+                end_epipolar:
+                fclose(resultFile);
+            }
+
+            /* Fermeture des handles ouverts. */
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+    }
+
     SDL_Event event;
     while (1) {
+        
         /* Afficher l'image à l'écran avec SDL. */
         while (SDL_WaitEvent(&event)) {
             if (event.type == SDL_QUIT || (event.type == SDL_WINDOWEVENT && event.window.event == SDL_WINDOWEVENT_CLOSE)) {
