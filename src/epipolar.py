@@ -26,11 +26,11 @@ cv2.setMouseCallback("Image de calibration 1", selectPoint, 0)
 cv2.setMouseCallback("Image de calibration 2", selectPoint, 1)
 
 while (isRunning):
-    if (len(points1) == len(points2) and len(points1) == 15):
+    if (len(points1) == len(points2) and len(points1) == 8):
         isRunning = False
         points1 = np.array(points1, dtype=float)
         points2 = np.array(points2, dtype=float)
-        F, mask = cv2.findFundamentalMat(points1, points2, cv2.FM_RANSAC)
+        F, _ = cv2.findFundamentalMat(points1, points2, cv2.FM_8POINT)
         with open("./calibration/results.txt", 'w') as file:
             file.truncate()
             F = F.flatten("C")

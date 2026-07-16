@@ -6,6 +6,7 @@ cameraWindows.exe
 include
 lib
 SDL2.dll
+SDL2_ttf.dll
 camera.exe
 clientStereo.exe
 calibrationImage0.jpg

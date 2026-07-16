@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <stdio.h>
 #include <math.h>
+#include <SDL2/SDL_ttf.h>
 #include "hashmap.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -50,6 +51,8 @@
 #endif
 
 struct threadContext {
+    int offsetX;
+    int offsetY;
     int numBoxes;
     int index;
     int imageWidth;
@@ -69,7 +72,10 @@ struct threadContext {
 
 Uint32 eventID;
 
+TTF_Font *font;
+
 int epipolarCalibration = 0;
+int sceneReconstruction = 0;
 long double F[3][3];
 
 pthread_mutex_t imageMutex1;
@@ -242,10 +248,10 @@ void* receivingThreadMain(void *_arg) {
             }
 
             if (nodeExists("tv", context->hashMap) && epipolarCalibration == 0) {
-                int offsetX = getX("tv", context->hashMap);
-                int offsetY = getY("tv", context->hashMap);
+                context->offsetX = getX("tv", context->hashMap);
+                context->offsetY = getY("tv", context->hashMap);
                 for (int i = 0; i < context->numBoxes; i++) {
-                    updateNode(context->detectionList[i], coordinateList[4 * i], coordinateList[4 * i + 1], coordinateList[4 * i] - offsetX, coordinateList[4 * i + 1] - offsetY, coordinateList[4 * i + 2], coordinateList[4 * i + 3], context->hashMap);
+                    updateNode(context->detectionList[i], coordinateList[4 * i], coordinateList[4 * i + 1], coordinateList[4 * i] - context->offsetX, coordinateList[4 * i + 1] - context->offsetY, coordinateList[4 * i + 2], coordinateList[4 * i + 3], context->hashMap);
                 }
             }
             pthread_mutex_lock(&updatedMutex);
@@ -305,6 +311,137 @@ void renderImage(struct threadContext *context) {
     SDL_RenderClear(context->renderer);
     SDL_RenderCopy(context->renderer, context->texture, NULL, NULL);
     SDL_RenderPresent(context->renderer);
+}
+
+
+void renderText(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, SDL_Color color) {
+    if (font == NULL || text == NULL) return;
+
+    /* Création d'une surface. */
+    SDL_Surface *surface = TTF_RenderText_Solid(font, text, color);
+    if (surface == NULL) return;
+
+    /* Conversion en texture. */
+    SDL_Texture *texture = SDL_CreateTextureFromSurface(renderer, surface);
+    
+    SDL_Rect destRect = {x, y, surface->w, surface->h};
+    
+    /* Copie sur le renderer. */
+    SDL_RenderCopy(renderer, texture, NULL, &destRect);
+
+    SDL_FreeSurface(surface);
+    SDL_DestroyTexture(texture);
+}
+
+
+void renderScene(struct threadContext *firstContext, struct threadContext *secondContext) {
+    pthread_mutex_lock(firstContext->imageMutex);
+    pthread_mutex_lock(secondContext->imageMutex);
+
+    /* Réinitialisation de l'écran en noir. */
+    SDL_SetRenderDrawColor(firstContext->renderer, 0, 0, 0, 255);
+    SDL_RenderClear(firstContext->renderer);
+
+    /* On s'assure qu'on a bien des données à traiter */
+    if (firstContext->detectionList == NULL || secondContext->detectionList == NULL) {
+        goto unlock_mutexes_and_present;
+    }
+
+    /* 1. Parcours des détections de la première caméra */
+    for (int i = 0; i < firstContext->hashMap->capacity; i++) {
+        struct node *toExplore = firstContext->hashMap->hashTable[i];
+
+        while (toExplore != NULL) {
+            int x1 = toExplore->x;
+            int y1 = toExplore->y;
+            
+            int boxWidth = toExplore->width; 
+            int boxHeight = toExplore->height;
+
+            if (x1 == ERROR_COORDINATE || y1 == ERROR_COORDINATE) {
+                toExplore = toExplore->next;
+                continue;
+            }
+
+            int matchFound = 0;
+
+            struct node *camNode = secondContext->hashMap->hashTable[getHashValue(toExplore->key, secondContext->hashMap)];
+            while (camNode != NULL) {
+                if (strcmp(camNode->key, toExplore->key) != 0 || camNode->isSeen == 1) {
+                    camNode = camNode->next;
+                    continue;
+                }
+
+                float deltaX = ((float) x1 - camNode->x);
+                float deltaY = ((float) y1 - camNode->y);
+                
+                deltaX = deltaX > 0 ? deltaX : -deltaX;
+                deltaY = deltaY > 0 ? deltaY : -deltaY;
+
+                if (deltaX <= 0.15 * 640 && deltaY <= 0.15 * 640) {
+                    matchFound = 1;
+                    camNode->isSeen = 1;
+                    break;
+                }
+                
+                camNode = camNode->next;
+            }
+
+            /* Choix de la couleur : Vert si mutualisée, Bleu sinon */
+            if (matchFound) {
+                SDL_SetRenderDrawColor(firstContext->renderer, 0, 255, 0, 255);
+            } else {
+                SDL_SetRenderDrawColor(firstContext->renderer, 0, 0, 255, 255);
+            }
+
+            /* Création du rectangle SDL pour la caméra 1 */
+            SDL_Rect rectangle;
+            rectangle.w = boxWidth;
+            rectangle.h = boxHeight;
+
+            /* Translation vers le repère SDL : on décale de (width/2, height/2) vers le centre. */
+            rectangle.x = (x1 + 640) - (boxWidth / 2);
+            rectangle.y = (y1 + 450) - (boxHeight / 2);
+
+            SDL_RenderDrawRect(firstContext->renderer, &rectangle);
+            SDL_Color textColor = matchFound ? (SDL_Color){0, 255, 0, 255} : (SDL_Color){0, 0, 255, 255};
+            renderText(firstContext->renderer, font, toExplore->key, rectangle.x, rectangle.y - 20, textColor);
+            
+            toExplore = toExplore->next;
+        }
+    }
+
+    /* 2. Affichage des objets détectés uniquement par la caméra 2 (non mutualisés) */
+    SDL_SetRenderDrawColor(secondContext->renderer, 0, 0, 255, 255);
+
+    for (int i = 0; i < secondContext->hashMap->capacity; i++) {
+        struct node *toExplore = secondContext->hashMap->hashTable[i];
+
+        while (toExplore != NULL) {
+            if (toExplore->isSeen == 0) {
+                SDL_Rect rectangle;
+                rectangle.w = toExplore->width;
+                rectangle.h = toExplore->height;
+                rectangle.x = (toExplore->x + 640) - (rectangle.w / 2);
+                rectangle.y = (toExplore->y + 450) - (rectangle.h / 2);
+
+                SDL_RenderDrawRect(secondContext->renderer, &rectangle);
+                renderText(firstContext->renderer, font, toExplore->key, rectangle.x, rectangle.y - 20, (SDL_Color){0, 0, 255, 255});
+            }
+
+            toExplore = toExplore->next;
+        }
+    }
+
+    firstContext->canGetImage = 0;
+    secondContext->canGetImage = 0;
+
+unlock_mutexes_and_present:
+    pthread_mutex_unlock(firstContext->imageMutex);
+    pthread_mutex_unlock(secondContext->imageMutex);
+
+    /* On affiche le résultat graphique final */
+    SDL_RenderPresent(firstContext->renderer);
 }
 
 
@@ -417,7 +554,14 @@ int main(int argc, char *argv[]) {
     /* Vérification de l'input utilisateur. */
     if (argc == 4) {
         for (int i = 0; i < argc; i++) {
-            if (strcmp(argv[i], "--epipolar") == 0) epipolarCalibration = 1;
+            if (strcmp(argv[i], "--epipolar") == 0) {
+                epipolarCalibration = 1;
+                break;
+            }
+            if (strcmp(argv[i], "--reconstruct") == 0) {
+                sceneReconstruction = 1;
+                break;
+            }
         }
     } else if (argc != 3) {
         printf("ERREUR : Veuillez renseigner l'index des cartes auxquelles vous souhaitez vous connecter.\n");
@@ -433,27 +577,65 @@ int main(int argc, char *argv[]) {
         printf("ERREUR : SDL n'a pas pu être initialisé.\n");
         exit(EXIT_FAILURE);
     }
+
+    if (TTF_Init() == -1) {
+        printf("ERREUR : L'affichage de texte à l'écran n'a pas pu être initialisé.\n");
+        exit(EXIT_FAILURE);
+    }
+
+    font = TTF_OpenFont("arial.ttf", 16); 
+    if (font == NULL) {
+        printf("ERREUR : Impossible de charger la police : %s\n", TTF_GetError());
+        exit(EXIT_FAILURE);
+    }
     
     /* Récupération de la taille de l'écran. */
     SDL_Rect screenRect;
     SDL_GetDisplayBounds(0, &screenRect);
 
-    SDL_Window *window = SDL_CreateWindow("Flux 1 Jetson Orin Nano", screenRect.w / 2 - 640, SDL_WINDOWPOS_CENTERED, 640, 640, 0);
-    SDL_Window *secondWindow = SDL_CreateWindow("Flux 2 Jetson Orin Nano", screenRect.w / 2, SDL_WINDOWPOS_CENTERED, 640, 640, 0);
+    SDL_Window *window;
+    SDL_Window *secondWindow;
+
+    if (sceneReconstruction == 1) {
+        window = SDL_CreateWindow("Flux reconstruit", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 1280, 900, 0);
+        secondWindow = window;
+    } else {
+        window = SDL_CreateWindow("Flux 1 Jetson Orin Nano", screenRect.w / 2 - 640, SDL_WINDOWPOS_CENTERED, 640, 640, 0);
+        secondWindow = SDL_CreateWindow("Flux 2 Jetson Orin Nano", screenRect.w / 2, SDL_WINDOWPOS_CENTERED, 640, 640, 0);
+    }
+
     if (window == NULL || secondWindow == NULL) {
         printf("ERREUR : La fenêtre d'affichage n'a pas pu être créé.\n");
         exit(EXIT_FAILURE);
     }
 
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_TARGETTEXTURE);
-    SDL_Renderer *secondRenderer = SDL_CreateRenderer(secondWindow, -1, SDL_RENDERER_TARGETTEXTURE);
+    SDL_Renderer *renderer;
+    SDL_Renderer *secondRenderer;
+
+    if (sceneReconstruction == 1) {
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_TARGETTEXTURE);
+        secondRenderer = renderer;
+    } else {
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_TARGETTEXTURE);
+        secondRenderer = SDL_CreateRenderer(secondWindow, -1, SDL_RENDERER_TARGETTEXTURE);
+    }
+
     if (renderer == NULL || secondRenderer == NULL) {
         printf("ERREUR : Le renderer de la fenêtre n'a pas pu être créé.\n");
         exit(EXIT_FAILURE);
     }
 
-    SDL_Texture *texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, 640, 640);
-    SDL_Texture *secondTexture = SDL_CreateTexture(secondRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, 640, 640);
+    SDL_Texture *texture;
+    SDL_Texture *secondTexture;
+
+    if (sceneReconstruction == 1) {
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, 1280, 900);
+        secondTexture = texture;
+    } else {
+        texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, 640, 640);
+        secondTexture = SDL_CreateTexture(secondRenderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, 640, 640);
+    }
+
     if (texture == NULL || secondTexture == NULL) {
         printf("ERREUR : La texture n'a pas pu être créée.\n");
         exit(EXIT_FAILURE);
@@ -595,20 +777,26 @@ int main(int argc, char *argv[]) {
             }
             pthread_mutex_unlock(&updatedMutex);
 
-            if (shouldPrint) {
+            if (shouldPrint && sceneReconstruction == 0) {
                 printDetections(&firstThreadContext, &secondThreadContext);
                 shouldPrint = 0;
             }
 
-            if (event.type == eventID) {
+            if (event.type != eventID) {
+                continue;
+            }
 
-                if (event.user.code == (Sint32) workerIndex1) {
-                    renderImage(&firstThreadContext);
-                }
+            if (sceneReconstruction == 1) {
+                renderScene(&firstThreadContext, &secondThreadContext);
+                continue;
+            }
 
-                if (event.user.code == (Sint32) workerIndex2) {
-                    renderImage(&secondThreadContext);
-                }
+            if (event.user.code == (Sint32) workerIndex1) {
+                renderImage(&firstThreadContext);
+            }
+
+            if (event.user.code == (Sint32) workerIndex2) {
+                renderImage(&secondThreadContext);
             }
         }
     }
