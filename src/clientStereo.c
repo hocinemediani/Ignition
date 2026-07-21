@@ -295,25 +295,6 @@ void initializeContext(struct threadContext *context, SDL_Texture *texture, SDL_
 }
 
 
-void renderImage(struct threadContext *context) {
-    pthread_mutex_lock(context->imageMutex);
-
-    if (context->canGetImage != 1 || context->pixelArray == NULL) {
-        pthread_mutex_unlock(context->imageMutex);
-        return;
-    }
-
-    SDL_UpdateTexture(context->texture, NULL, context->pixelArray, context->imageWidth * 4);
-    context->canGetImage = 0;
-
-    pthread_mutex_unlock(context->imageMutex);
-
-    SDL_RenderClear(context->renderer);
-    SDL_RenderCopy(context->renderer, context->texture, NULL, NULL);
-    SDL_RenderPresent(context->renderer);
-}
-
-
 void renderText(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x, int y, SDL_Color color) {
     if (font == NULL || text == NULL) return;
 
@@ -331,6 +312,53 @@ void renderText(SDL_Renderer *renderer, TTF_Font *font, const char *text, int x,
 
     SDL_FreeSurface(surface);
     SDL_DestroyTexture(texture);
+}
+
+
+void renderImage(struct threadContext *context) {
+    pthread_mutex_lock(context->imageMutex);
+
+    if (context->canGetImage != 1 || context->pixelArray == NULL) {
+        pthread_mutex_unlock(context->imageMutex);
+        return;
+    }
+
+    SDL_UpdateTexture(context->texture, NULL, context->pixelArray, context->imageWidth * 4);
+    SDL_RenderClear(context->renderer);
+    SDL_RenderCopy(context->renderer, context->texture, NULL, NULL);
+
+    context->canGetImage = 0;
+
+    for (int i = 0; i < context->hashMap->capacity; i++) {
+        struct node *toExplore = context->hashMap->hashTable[i];
+
+        while (toExplore != NULL) {
+            int x1 = toExplore->x;
+            int y1 = toExplore->y;
+            
+            int boxWidth = toExplore->width; 
+            int boxHeight = toExplore->height;
+            
+            SDL_SetRenderDrawColor(context->renderer, 0, 255, 0, 255);
+
+            /* Création du rectangle SDL pour la caméra 1 */
+            SDL_Rect rectangle;
+            rectangle.w = boxWidth;
+            rectangle.h = boxHeight;
+            rectangle.x = (x1 + context->offsetX);
+            rectangle.y = (y1 + context->offsetY);
+
+            SDL_RenderDrawRect(context->renderer, &rectangle);
+            SDL_Color textColor = (SDL_Color){0, 255, 0, 255};
+            renderText(context->renderer, font, toExplore->key, rectangle.x, rectangle.y - 20, textColor);
+            
+            toExplore = toExplore->next;
+        }
+    }
+
+    pthread_mutex_unlock(context->imageMutex);
+
+    SDL_RenderPresent(context->renderer);
 }
 
 
@@ -721,7 +749,7 @@ int main(int argc, char *argv[]) {
         );
 
         if (!success) {
-            printf("ERREUR : Le CreateProcess n'a pas pu se faire. Code d'erreur : %lu\n", GetLastError());
+            printf("ERREUR : Le processus fils n'a pas pu être créé. Code d'erreur : %lu\n", GetLastError());
             epipolarCalibration = 0;
         } else {
             /* Dans le père, on attend la fin de l'exécution du fils. */

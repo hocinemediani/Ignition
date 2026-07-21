@@ -76,11 +76,10 @@ camInfo = lib.getCameraInfo()
 cameraWidth = camInfo.width
 cameraHeight = camInfo.height
 
-time.sleep(0.5)
 engineRebuild = 0
 
 # Optimisation du modèle.
-if (str(input("Souhaitez vous enregistrer les modifications au modèle ? ")) == "y"):
+if (str(input("Souhaitez vous enregistrer les modifications au modèle ? (y/n)")) == "y"):
     engineRebuild = 1
     onnxGraph = graphsurgeon.import_onnx(onnx.load("./models/yolov8n.onnx"))
 
@@ -215,10 +214,9 @@ for i in range (0, numTensors):
         correctType = np.int32
 
     ## Allocation des buffers partagés.
-    buffers.append(cuda.managed_empty(
-                                tuple(trtEngine.get_tensor_shape(trtEngine.get_tensor_name(i))),
-                                correctType,
-                                mem_flags=cuda.mem_attach_flags.GLOBAL))
+    buffers.append(cuda.managed_empty(tuple(trtEngine.get_tensor_shape(trtEngine.get_tensor_name(i))),
+                                      correctType,
+                                      mem_flags=cuda.mem_attach_flags.GLOBAL))
     
     ## Liaison (enregistrement) de l'adresse du buffer device dans le contexte TensorRT.
     context.set_tensor_address(trtEngine.get_tensor_name(i), buffers[i].ctypes.data)
@@ -309,25 +307,25 @@ while (True):
     detectionBufferType = stringElem * numBoxes
     contiguousDetectionBuffer = detectionBufferType()
 
+    # Boucle de traitement des boîtes de détection.
     for i in range (0, numBoxes):
         classNumber = int(buffers[4][0][i])
 
-        boxColor = tuple(CLASS_COLOR[classNumber].tolist())
+        # boxColor = tuple(CLASS_COLOR[classNumber].tolist())
         coordinates = [int(buffers[2][0][i][j]) for j in range(0, 4)]
-        cv2.rectangle(fullRgbImage, (coordinates[0], coordinates[1]), (coordinates[2], coordinates[3]), boxColor, 5)
+        # cv2.rectangle(fullRgbImage, (coordinates[0], coordinates[1]), (coordinates[2], coordinates[3]), boxColor, 5)
 
-        detectionString = COCO_CLASSES[classNumber] + " : " + str(round(buffers[3][0][i], 3)) + "%"
-        cv2.putText(fullRgbImage, detectionString, (coordinates[0], coordinates[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, boxColor, 2)
+        # detectionString = COCO_CLASSES[classNumber] + " : " + str(round(buffers[3][0][i], 3)) + "%"
+        # cv2.putText(fullRgbImage, detectionString, (coordinates[0], coordinates[1]), cv2.FONT_HERSHEY_SIMPLEX, 1, boxColor, 2)
 
         contiguousCoordinateBuffer[4 * i] = coordinates[0]
         contiguousCoordinateBuffer[4 * i + 1] = coordinates[1]
         contiguousCoordinateBuffer[4 * i + 2] = coordinates[2] - coordinates[0]
         contiguousCoordinateBuffer[4 * i + 3] = coordinates[3] - coordinates[1]
         contiguousDetectionBuffer[i].value = COCO_CLASSES[classNumber].encode("utf-8")
-        
 
     ## Affichage de l'image à l'écran / envoi de l'image.
-    (unused, jpegArray) = cv2.imencode(".jpg", cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
+    (_, jpegArray) = cv2.imencode(".jpg", cv2.cvtColor(fullRgbImage, cv2.COLOR_RGB2BGR))
 
     lib.sendData(ctypes.addressof(contiguousCoordinateBuffer), ctypes.sizeof(contiguousCoordinateBuffer))
     lib.sendData(ctypes.addressof(contiguousDetectionBuffer), ctypes.sizeof(contiguousDetectionBuffer))
