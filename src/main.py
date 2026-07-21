@@ -222,7 +222,7 @@ for i in range (0, numTensors):
     context.set_tensor_address(trtEngine.get_tensor_name(i), buffers[i].ctypes.data)
 
 # Définition de la fenêtre de prévisualisation.
-windowName = "Flux Jetson Orin Nano"
+#windowName = "Flux Jetson Orin Nano"
 #cv2.namedWindow(windowName, cv2.WINDOW_NORMAL)
 
 # Boucle de fonctionnement.

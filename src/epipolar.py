@@ -10,20 +10,25 @@ image2 = cv2.imread("./calibration/calibrationImage1.jpg")
 
 automaticCalibration = str(input("Souhaitez vous faire la calibration de manière automatique ? (y/n)"))
 
+# Calcule la matrice fondamentale en fonction des sets de points récupérés
+# de l'image de la caméra 1 et de la caméra 2, avec la méthode spécifiée
+# (8 points ou RANSAC lorsqu'il y en a plus).
 def computeFundamentalMatrix(points1, points2, computationMethod):
     F, mask = cv2.findFundamentalMat(points1, points2, computationMethod)
     with open("./calibration/results.txt", 'w') as file:
         file.truncate()
         F = F.flatten("C")
+        # Ecriture dans le fichiers results.txt.
         for i in range(len(F)):
             coefficientString = str(F[i]) + "\n"
             file.write(coefficientString)
     return mask
 
 if (automaticCalibration == "y"):
-    # Instatiation de l'objet permettant de calculer la Scale Invariant Feature Transform.
+    # Instantiation de l'objet permettant de calculer la Scale Invariant Feature Transform.
     sift = cv2.SIFT_create()
 
+    # Conversion des images en niveau de gris pour la SIFT.
     greyImage1 = cv2.cvtColor(image1, cv2.COLOR_RGB2GRAY)
     greyImage2 = cv2.cvtColor(image2, cv2.COLOR_RGB2GRAY)
 
@@ -31,6 +36,7 @@ if (automaticCalibration == "y"):
     keyPoints1, descriptors1 = sift.detectAndCompute(greyImage1, None)
     keyPoints2, descriptors2 = sift.detectAndCompute(greyImage2, None)
 
+    # Ecriture des keypoints pour l'affichage plus tard.
     image1 = cv2.drawKeypoints(image1, keyPoints1, image1)
     image2 = cv2.drawKeypoints(image2, keyPoints2, image2)
 
@@ -52,11 +58,15 @@ if (automaticCalibration == "y"):
         correctPoints1.append(keyPoints1[point.queryIdx].pt)
         correctPoints2.append(keyPoints2[point.trainIdx].pt)
 
+    # Points sans outliers par le test de Lowe.
     correctPoints1 = np.array(correctPoints1, dtype=np.float32)
     correctPoints2 = np.array(correctPoints2, dtype=np.float32)
 
+    # Calcul de la matrice fondamentale par l'algorithme RANSAC pour éviter
+    # l'utilisation de points outliers.
     mask = computeFundamentalMatrix(correctPoints1, correctPoints2, cv2.FM_RANSAC)
 
+    # Récupération des points inliers pour ensuite les afficher à l'écran.
     realGoodMatches = []
     for i in range (len(goodMatches)):
         if (mask[i][0] == 1):
