@@ -65,7 +65,7 @@ if (automaticCalibration == "y"):
     finalImage = cv2.drawMatches(image1, keyPoints1, image2, keyPoints2, realGoodMatches, None, flags=cv2.DrawMatchesFlags_NOT_DRAW_SINGLE_POINTS)
 
     cv2.imshow("Images de calibration", finalImage)
-    cv2.waitKey(10000)
+    cv2.waitKey(5 * 1000)
     cv2.destroyAllWindows()
 else:
     cv2.imshow("Image de calibration 1", image1)

@@ -292,6 +292,9 @@ void initializeContext(struct threadContext *context, SDL_Texture *texture, SDL_
     context->workerIndex = workerIndex;
     context->hashMap = initializeHashMap(32);
     context->previousHashMap = initializeHashMap(32);
+    context->offsetX = 0;
+    context->offsetY = 0;
+    context->imageWidth = 0;
 }
 
 
