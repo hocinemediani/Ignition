@@ -2,6 +2,10 @@
 
 It follows a Client <--> Orchestrator <--> Workers model, where multiple clients can submit custom machine learning models or inference tasks, and get the results back through the terminal.
 
+## Diagram of the platform functioning :
+<img width="1322" height="622" alt="inference-functioning" src="https://github.com/user-attachments/assets/1dc50b09-7cd6-411c-9f91-bf43a0c9e304" />
+
+
 ## Architecture and Load Balancing :
 - **Centralized Orchestration:** The orchestrator manages a cluster of Jetson Edge-AI nodes (workers). It dynamically tracks the state and available queue size of each connected worker via dedicated monitoring sockets (receiving `HELLO`, `INFO`, and `BYE` messages).
 - **Smart Task Distribution:** When a client submits an inference request, the orchestrator explores the cluster state and routes the data to the worker with the least full queue. This ensures optimal load balancing and minimizes client waiting time.
