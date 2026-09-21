@@ -2,6 +2,9 @@
 
 It follows a Client <--> Orchestrator <--> Workers model, where multiple clients submit tasks in the form of a `.cu` (CUDA) file, and get the execution results back directly through their terminal.
 
+## Diagram of the platform functioning :
+<img width="1252" height="492" alt="master-branch" src="https://github.com/user-attachments/assets/1c862278-0c1a-4253-8f86-8d80a6931877" />
+
 ## Client Submission Rules :
 Each client submits a file that has to follow strict rules to be processed correctly by the cluster:
 - **Extension:** The file *must* be a `.cu` file to fully utilize the GPU capabilities of the Jetson worker cards.
