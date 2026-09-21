@@ -2,6 +2,10 @@
 
 It follows a direct Client <--> Jetson Edge-AI Node model, where clients connect directly to a Jetson board to receive a real-time object detection stream.
 
+## Diagram of the platform functioning :
+<img width="1462" height="881" alt="camera-functioning" src="https://github.com/user-attachments/assets/1b0de430-8e6e-4e86-91d0-73e5ece24279" />
+
+
 ## Architecture and Connections:
 - **Autonomous Nodes:** Each Jetson board operates independently as an Edge-AI node, managing its own camera capture, model inference, and network distribution.
 - **Multi-Client Support:** The network architecture allows up to 5 concurrent client connections simultaneously per Jetson node without degrading capture performance.
